@@ -90,3 +90,7 @@ continuing a clip with a character attached through Agent mode (use an exact joi
 
 Automated use may be against Google's terms of service. It runs one generation at a time at a person's pace and does
 nothing to get around Flow's checks. Use it on your own account, at your own risk.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

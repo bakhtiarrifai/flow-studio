@@ -2,6 +2,7 @@
   "name": "flow-studio",
   "version": "0.1.0",
   "description": "Local MCP server + control panel that drives Google Flow in its own browser profile",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "bin": {
