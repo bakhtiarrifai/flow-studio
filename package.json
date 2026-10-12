@@ -1,7 +1,7 @@
 {
   "name": "flow-studio",
   "version": "0.1.0",
-  "description": "Local MCP server + control panel that drives Google Flow in its own browser profile",
+  "description": "Local MCP server + control panel that drives Google Flow in its own browser profile, for Claude Code, Codex and Antigravity on Linux, macOS and Windows",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -12,7 +12,8 @@
     "start": "node src/mcp.js",
     "login": "node src/login.js",
     "studio": "node src/studio.js",
-    "check": "for f in src/*.js; do node --check $f || exit 1; done"
+    "register": "node src/register.js",
+    "check": "node scripts/check.js"
   },
   "engines": {
     "node": ">=22"

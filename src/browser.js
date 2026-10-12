@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { chromium } from "playwright-core";
 import { CDP_PORT, FLOW_URL, PROFILE_DIR } from "./config.js";
@@ -9,13 +10,20 @@ const FLOW_HOSTS = /^https:\/\/(flow\.google\.com|labs\.google\/fx)/;
 
 // Any Chromium-family browser speaks the DevTools protocol, so Chrome is preferred but not required.
 const BINARIES = ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium", "microsoft-edge", "microsoft-edge-stable", "brave-browser"];
-const FIXED_PATHS = [
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-];
+const MAC_APPS = ["Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser"];
+const WIN_APPS = ["Google\\Chrome\\Application\\chrome.exe", "Microsoft\\Edge\\Application\\msedge.exe", "BraveSoftware\\Brave-Browser\\Application\\brave.exe", "Chromium\\Application\\chrome.exe"];
+
+// Where each platform installs them when they are not on PATH, which is the normal case on macOS and Windows.
+function fixedPaths() {
+  if (process.platform === "darwin") {
+    return MAC_APPS.flatMap((app) => ["/Applications", join(homedir(), "Applications")].map((root) => join(root, `${app}.app`, "Contents", "MacOS", app)));
+  }
+  if (process.platform === "win32") {
+    const roots = [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"], process.env.LOCALAPPDATA].filter(Boolean);
+    return WIN_APPS.flatMap((app) => roots.map((root) => join(root, app)));
+  }
+  return [];
+}
 
 export function findBrowser() {
   const override = process.env.FLOW_STUDIO_BROWSER;
@@ -30,7 +38,7 @@ export function findBrowser() {
       if (existsSync(candidate)) return candidate;
     }
   }
-  const fixed = FIXED_PATHS.find((p) => existsSync(p));
+  const fixed = fixedPaths().find((p) => existsSync(p));
   if (fixed) return fixed;
   throw new Error("No Chrome, Chromium, Edge or Brave found. Install one, or set FLOW_STUDIO_BROWSER to its executable.");
 }

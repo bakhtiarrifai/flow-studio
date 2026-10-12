@@ -1,33 +1,56 @@
 # Flow Studio
 
-Drive Google Flow (flow.google.com) from Claude Code, or from a local control panel, using the Flow credits your
-Google account already has. A small program on this computer opens its own browser window, uses the session you
-signed in to, and clicks Flow's real buttons.
+Drive Google Flow (flow.google.com) from Claude Code, Codex or Antigravity (`agy`), or from a local control panel,
+using the Flow credits your Google account already has. Runs on Linux, macOS and Windows. A small program on this
+computer opens its own browser window, uses the session you signed in to, and clicks Flow's real buttons.
 
 ```
-Claude Code ──stdio──> flow-studio ──DevTools protocol──> browser (own profile) ──> Flow
+Claude Code / Codex / agy ──stdio──> flow-studio ──DevTools protocol──> browser (own profile) ──> Flow
 ```
 
 Modelled on Guney Topcu's Flow Studio (github.com/GTAI-1/flow-mcp), rewritten for this machine: plain JavaScript with
-no build step, Linux first, and any Chromium-family browser (Chrome, Chromium, Edge, Brave).
+no build step and any Chromium-family browser (Chrome, Chromium, Edge, Brave).
 
 ## Setup
+
+The same three commands on every system, in a terminal (PowerShell or Command Prompt on Windows):
 
 ```bash
 npm install
 npm run login      # opens the browser: sign in to Google, open or create a Flow project, leave the window open
-claude mcp add --scope user flow -- node "$PWD/src/mcp.js"
+npm run register   # adds the server to every assistant found: Claude Code, Codex, Antigravity (agy)
 ```
 
-Then, in Claude Code: *"Check Flow and tell me my credit balance."*
+Then, in any of them: *"Check Flow and tell me my credit balance."*
 
-The control panel works without Claude:
+`npm run register -- codex agy` registers only the ones named. It runs each assistant's own command with absolute
+paths, which you can also type yourself:
+
+| Assistant | Command |
+|---|---|
+| Claude Code | `claude mcp add --scope user flow -- node /path/to/flow-studio/src/mcp.js` |
+| Codex | `codex mcp add flow -- node /path/to/flow-studio/src/mcp.js` |
+| Antigravity | `agy mcp add flow node /path/to/flow-studio/src/mcp.js` |
+
+Several assistants can be open at once: the first one to start owns the queue and the panel, the others join it.
+
+The control panel works without an assistant:
 
 ```bash
 npm run studio     # http://127.0.0.1:8791
 ```
 
 Needs Node 22+, FFmpeg (cut, narration, exact joins), and a display that stays awake while it works.
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| FFmpeg | `sudo dnf install ffmpeg` or `sudo apt install ffmpeg` | `brew install ffmpeg` | `winget install Gyan.FFmpeg` |
+| Local voice | espeak-ng | `say` (built in) | System.Speech (built in) |
+| Browser found in | `PATH` | `/Applications`, `~/Applications` | Program Files, `%LOCALAPPDATA%` |
+
+Linux is the system this is developed and tested on. The macOS and Windows paths are written to each system's
+conventions but have not been run there yet; `FLOW_STUDIO_BROWSER` and `FLOW_STUDIO_FFMPEG` override discovery if
+needed.
 
 ## Working order
 
@@ -58,7 +81,7 @@ Flow takes frames or references in one clip, never both.
 | `flow_character`, `flow_character_edit`, `flow_characters` | Create, redraw in place, list |
 | `flow_restyle` | Change an existing clip. No quote beforehand; needs explicit confirmation |
 | `flow_techniques` | 45 presets: camera moves, transitions, product and image looks |
-| `flow_voices`, `flow_narrate` | Narration with Google AI Studio voices (free key) or espeak-ng / macOS `say` |
+| `flow_voices`, `flow_narrate` | Narration with Google AI Studio voices (free key) or a voice on this computer |
 | `flow_cut` | Join clips with narration and music |
 
 Files land in `~/flow-studio-out/<film>/`: `frame-NN` stills, `scene-NN` clips, `edit-NN` restyles, `clip-NN`
@@ -68,11 +91,12 @@ downloads. State (browser profile, key, token) lives in `~/.flow-studio/`.
 
 Create a free key at aistudio.google.com/apikey and paste it into the panel's **Voice** tab. It is checked with
 Google and stored in `~/.flow-studio/gemini-key`, readable only by you. Do not paste it into a chat. Without a key,
-`engine: "local"` uses espeak-ng, which is robotic but fine for timing.
+`engine: "local"` uses a voice on this computer (espeak-ng, `say` or System.Speech), which is fine for timing.
 
 ## Settings
 
-`FLOW_STUDIO_BROWSER` (browser executable), `FLOW_STUDIO_PORT` (8791), `FLOW_STUDIO_CDP_PORT` (9344),
+`FLOW_STUDIO_BROWSER` (browser executable), `FLOW_STUDIO_FFMPEG` / `FLOW_STUDIO_FFPROBE`, `FLOW_STUDIO_PORT` (8791),
+`FLOW_STUDIO_CDP_PORT` (9344),
 `FLOW_STUDIO_OUTPUT`, `FLOW_STUDIO_HOME`, `FLOW_STUDIO_PAUSE_MIN_S` / `FLOW_STUDIO_PAUSE_MAX_S` (25 / 70),
 `GEMINI_API_KEY`, `FLOW_STUDIO_GEMINI_TTS` (text-to-speech model name).
 

@@ -70,7 +70,16 @@ export async function speakWithGoogle(text, voice, target, style) {
 
 const PLATFORM = process.platform;
 
-// Voices installed on this computer: `say` on macOS, espeak-ng on Linux.
+export const LOCAL_VOICE_HINT =
+  PLATFORM === "darwin" ? "Add one in System Settings > Accessibility > Spoken Content" : PLATFORM === "win32" ? "Add one in Settings > Time & language > Speech" : "Install espeak-ng";
+
+// Windows speaks through System.Speech. The text, voice and path travel in environment variables, so nothing is quoted
+// into the script.
+const SAPI = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ";
+const powershell = (script, vars = {}) =>
+  exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", SAPI + script], { env: { ...process.env, ...vars }, maxBuffer: 4 * 1024 * 1024 });
+
+// Voices installed on this computer: `say` on macOS, System.Speech on Windows, espeak-ng on Linux.
 export async function localVoices() {
   if (PLATFORM === "darwin") {
     const { stdout } = await exec("say", ["-v", "?"], { maxBuffer: 4 * 1024 * 1024 }).catch(() => ({ stdout: "" }));
@@ -79,6 +88,14 @@ export async function localVoices() {
       .map((l) => l.match(/^(.+?)\s{2,}(en_\w{2})\s+#/))
       .filter(Boolean)
       .map((m) => ({ name: m[1].trim(), description: `${m[2].replace("_", "-")} · macOS` }));
+  }
+  if (PLATFORM === "win32") {
+    const { stdout } = await powershell("$s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo.Name + '|' + $_.VoiceInfo.Culture.Name }").catch(() => ({ stdout: "" }));
+    return stdout
+      .split(/\r?\n/)
+      .map((l) => l.trim().split("|"))
+      .filter(([name, culture]) => name && culture)
+      .map(([name, culture]) => ({ name, description: `${culture} · Windows` }));
   }
   const { stdout } = await exec("espeak-ng", ["--voices=en"]).catch(() => ({ stdout: "" }));
   return stdout
@@ -93,7 +110,15 @@ export async function speakLocally(text, voice, target) {
   const raw = target.replace(/\.\w+$/, "") + (PLATFORM === "darwin" ? ".raw.aiff" : ".raw.wav");
   try {
     if (PLATFORM === "darwin") await exec("say", ["-v", voice, "-r", "168", "-o", raw, text]);
-    else {
+    else if (PLATFORM === "win32") {
+      await powershell("$s.SelectVoice($env:FLOW_STUDIO_VOICE); $s.SetOutputToWaveFile($env:FLOW_STUDIO_WAV); $s.Speak($env:FLOW_STUDIO_TEXT); $s.Dispose()", {
+        FLOW_STUDIO_VOICE: voice,
+        FLOW_STUDIO_WAV: raw,
+        FLOW_STUDIO_TEXT: text,
+      }).catch((err) => {
+        throw new Error(`Windows speech failed: ${String(err.stderr ?? err).trim().slice(-300)}`);
+      });
+    } else {
       await exec("espeak-ng", ["-v", voice, "-s", "150", "-w", raw, text]).catch((err) => {
         throw new Error(err.code === "ENOENT" ? "No local voice engine found. Install espeak-ng, or use engine \"google\"." : `espeak-ng failed: ${err.stderr ?? err}`);
       });

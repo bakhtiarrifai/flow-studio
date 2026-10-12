@@ -8,7 +8,7 @@ import { z } from "zod";
 import { DEFAULT_MAX_CREDITS, OUT, PAUSE_MAX_S, PAUSE_MIN_S, UPLOAD_DIR, projectDir, safeName } from "./config.js";
 import * as flow from "./flow.js";
 import { cut, duration, lastFrame } from "./media.js";
-import { GOOGLE_VOICES, googleKey, localVoices, saveGoogleKey, speakLocally, speakWithGoogle } from "./narrate.js";
+import { GOOGLE_VOICES, LOCAL_VOICE_HINT, googleKey, localVoices, saveGoogleKey, speakLocally, speakWithGoogle } from "./narrate.js";
 import { TECHNIQUES, techniqueById } from "./techniques.js";
 
 // ---------------------------------------------------------------- argument shapes
@@ -152,6 +152,14 @@ const inProject = (dir, file) => (isAbsolute(file) ? file : join(dir, file));
 const KIND = { ".mp4": "video", ".webm": "video", ".mov": "video", ".jpg": "image", ".jpeg": "image", ".png": "image", ".webp": "image", ".wav": "audio", ".mp3": "audio", ".m4a": "audio" };
 
 function moveToTrash(target) {
+  if (process.platform === "win32") {
+    // The Recycle Bin has no folder to move into. The path travels in an environment variable, so nothing is quoted into the script.
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($env:FLOW_STUDIO_TARGET, 'OnlyErrorDialogs', 'SendToRecycleBin')"], {
+      env: { ...process.env, FLOW_STUDIO_TARGET: target },
+      stdio: "ignore",
+    });
+    return;
+  }
   try {
     if (process.platform === "darwin") throw new Error("no gio");
     execFileSync("gio", ["trash", target], { stdio: "ignore" });
@@ -396,7 +404,7 @@ export class Studio {
     }
     const local = await localVoices();
     const name = voice ?? local[0]?.name;
-    if (!name) throw new Error("No local voice is installed. Install espeak-ng, or use engine \"google\".");
+    if (!name) throw new Error(`No local voice is installed. ${LOCAL_VOICE_HINT}, or use engine "google".`);
     return { ...(await speakLocally(text, name, target)), engine, voice: name, credits: 0 };
   }
 

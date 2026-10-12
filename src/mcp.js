@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MCP entry point: `claude mcp add --scope user flow -- node /path/to/flow-studio/src/mcp.js`
+// MCP entry point, over stdio. `npm run register` adds it to Claude Code, Codex and Antigravity.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Studio, shapes } from "./core.js";

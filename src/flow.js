@@ -448,12 +448,24 @@ function sniff(file) {
   return ".bin";
 }
 
+// unzip on macOS and most Linux; the tar that ships with Windows 10+ and macOS reads zip; Python is the last resort.
+const UNZIPPERS = [
+  ["unzip", (zip, dest) => ["-o", "-q", zip, "-d", dest]],
+  ["tar", (zip, dest) => ["-xf", zip, "-C", dest]],
+  ["python3", (zip, dest) => ["-m", "zipfile", "-e", zip, dest]],
+  ["python", (zip, dest) => ["-m", "zipfile", "-e", zip, dest]],
+];
+
 function unzip(zip, dest) {
-  try {
-    execFileSync("unzip", ["-o", "-q", zip, "-d", dest], { stdio: "ignore" });
-  } catch {
-    execFileSync("python3", ["-m", "zipfile", "-e", zip, dest], { stdio: "ignore" });
-  }
+  const unpacked = UNZIPPERS.some(([bin, args]) => {
+    try {
+      execFileSync(bin, args(zip, dest), { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!unpacked) throw new Error("Flow sent several takes as a zip and nothing on this computer could unpack it. Install unzip.");
   const files = [];
   const walk = (dir) => {
     for (const f of readdirSync(dir)) {
