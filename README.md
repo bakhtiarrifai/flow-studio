@@ -93,4 +93,4 @@ nothing to get around Flow's checks. Use it on your own account, at your own ris
 
 ## License
 
-MIT. See [LICENSE](LICENSE), which also carries the notice for the parts adapted from flow-mcp (ISC).
+MIT. See [LICENSE](LICENSE). The notice for the parts adapted from flow-mcp (ISC) is in [NOTICE](NOTICE).
