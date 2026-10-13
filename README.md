@@ -1,11 +1,12 @@
 # Flow Studio
 
-Drive Google Flow (flow.google.com) from Claude Code, Codex or Antigravity (`agy`), or from a local control panel,
-using the Flow credits your Google account already has. Runs on Linux, macOS and Windows. A small program on this
-computer opens its own browser window, uses the session you signed in to, and clicks Flow's real buttons.
+Drive Google Flow (flow.google.com) from Claude Code, Claude Desktop, Codex, Antigravity (`agy`) or Gemini CLI, or
+from a local control panel, using the Flow credits your Google account already has. Runs on Linux, macOS and Windows.
+A small program on this computer opens its own browser window, uses the session you signed in to, and clicks Flow's
+real buttons.
 
 ```
-Claude Code / Codex / agy ──stdio──> flow-studio ──DevTools protocol──> browser (own profile) ──> Flow
+assistant (Claude, Codex, agy, Gemini) ──stdio──> flow-studio ──DevTools protocol──> browser (own profile) ──> Flow
 ```
 
 Modelled on Guney Topcu's Flow Studio (github.com/GTAI-1/flow-mcp), rewritten for this machine: plain JavaScript with
@@ -18,19 +19,24 @@ The same three commands on every system, in a terminal (PowerShell or Command Pr
 ```bash
 npm install
 npm run login      # opens the browser: sign in to Google, open or create a Flow project, leave the window open
-npm run register   # adds the server to every assistant found: Claude Code, Codex, Antigravity (agy)
+npm run register   # adds the server to every assistant found on this computer
 ```
 
 Then, in any of them: *"Check Flow and tell me my credit balance."*
 
-`npm run register -- codex agy` registers only the ones named. It runs each assistant's own command with absolute
-paths, which you can also type yourself:
+`npm run register -- codex desktop` registers only the ones named: `claude`, `desktop`, `codex`, `agy`, `gemini`. It
+uses absolute paths and each assistant's own command, which you can also type yourself:
 
 | Assistant | Command |
 |---|---|
 | Claude Code | `claude mcp add --scope user flow -- node /path/to/flow-studio/src/mcp.js` |
 | Codex | `codex mcp add flow -- node /path/to/flow-studio/src/mcp.js` |
 | Antigravity | `agy mcp add flow node /path/to/flow-studio/src/mcp.js` |
+| Gemini CLI | `gemini mcp add --scope user flow node /path/to/flow-studio/src/mcp.js` |
+
+Claude Desktop has no such command. `register` adds a `flow` entry under `mcpServers` in its
+`claude_desktop_config.json` and keeps the rest of the file; quit and reopen Claude Desktop afterwards. The chat
+websites (claude.ai, ChatGPT, gemini.google.com) cannot start a program on your computer, so they cannot use this.
 
 Several assistants can be open at once: the first one to start owns the queue and the panel, the others join it.
 

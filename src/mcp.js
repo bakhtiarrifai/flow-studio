@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MCP entry point, over stdio. `npm run register` adds it to Claude Code, Codex and Antigravity.
+// MCP entry point, over stdio. `npm run register` adds it to the assistants installed on this computer.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Studio, shapes } from "./core.js";

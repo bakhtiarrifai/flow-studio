@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Registers this MCP server with the assistants installed on this computer: `npm run register` for every one found,
-// or name some (`npm run register -- codex agy`). Each assistant's own `mcp add` command does the writing.
+// or name some (`npm run register -- codex desktop`). Each assistant's own `mcp add` command does the writing, except
+// Claude Desktop, which has none and keeps its servers in a JSON file.
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Absolute paths, so the server starts whatever folder or PATH the assistant runs with.
@@ -11,9 +15,22 @@ const NAME = "flow";
 
 const CLIENTS = {
   claude: { label: "Claude Code", add: ["mcp", "add", "--scope", "user", NAME, "--", NODE, SERVER], remove: ["mcp", "remove", "--scope", "user", NAME] },
+  desktop: { label: "Claude Desktop", file: desktopConfig() },
   codex: { label: "Codex", add: ["mcp", "add", NAME, "--", NODE, SERVER], remove: ["mcp", "remove", NAME] },
   agy: { label: "Antigravity (agy)", add: ["mcp", "add", NAME, NODE, SERVER], remove: ["mcp", "remove", NAME] },
+  gemini: { label: "Gemini CLI", add: ["mcp", "add", "--scope", "user", NAME, NODE, SERVER], remove: ["mcp", "remove", "--scope", "user", NAME] },
 };
+
+function desktopConfig() {
+  const home = homedir();
+  const dir =
+    process.platform === "darwin"
+      ? join(home, "Library", "Application Support")
+      : process.platform === "win32"
+        ? (process.env.APPDATA ?? join(home, "AppData", "Roaming"))
+        : (process.env.XDG_CONFIG_HOME ?? join(home, ".config"));
+  return join(dir, "Claude", "claude_desktop_config.json");
+}
 
 // On Windows these commands are .cmd shims, which only a shell can start; there the line is quoted by hand.
 function run(bin, args) {
@@ -25,14 +42,30 @@ function run(bin, args) {
 const ok = (result) => !result.error && result.status === 0;
 const said = (result) => `${result.stdout ?? ""}${result.stderr ?? ""}`.trim().split("\n").pop() || String(result.error ?? "no output");
 
-function register(bin) {
-  const { label, add, remove } = CLIENTS[bin];
-  if (!ok(run(bin, ["--version"]))) return `${label}: not installed, skipped`;
-  let result = run(bin, add);
+// Adds one entry and keeps everything else in the file. A file that cannot be read as JSON is left alone.
+function registerInFile(label, file) {
+  if (!existsSync(dirname(file))) return `${label}: not installed, skipped`;
+  let config = {};
+  try {
+    const text = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+    if (text) config = JSON.parse(text);
+  } catch {
+    return `${label}: FAILED (${file} is not valid JSON, so it was left untouched)`;
+  }
+  config.mcpServers = { ...config.mcpServers, [NAME]: { command: NODE, args: [SERVER] } };
+  writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
+  return `${label}: registered as "${NAME}" (quit and reopen it to load the server)`;
+}
+
+function register(name) {
+  const { label, file, add, remove } = CLIENTS[name];
+  if (file) return registerInFile(label, file);
+  if (!ok(run(name, ["--version"]))) return `${label}: not installed, skipped`;
+  let result = run(name, add);
   if (!ok(result)) {
     // Most likely an older entry under the same name; replace it.
-    run(bin, remove);
-    result = run(bin, add);
+    run(name, remove);
+    result = run(name, add);
   }
   return ok(result) ? `${label}: registered as "${NAME}"` : `${label}: FAILED (${said(result)})`;
 }
