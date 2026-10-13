@@ -59,7 +59,8 @@ async function launch() {
   const extra = (process.env.FLOW_STUDIO_BROWSER_ARGS ?? "").split(" ").filter(Boolean);
   const child = spawn(
     bin,
-    [`--user-data-dir=${PROFILE_DIR}`, `--remote-debugging-port=${CDP_PORT}`, "--no-first-run", "--no-default-browser-check", ...extra, FLOW_URL],
+    // Wide enough that Flow keeps its project navigation on screen; in a narrow window it slides out of reach.
+    [`--user-data-dir=${PROFILE_DIR}`, `--remote-debugging-port=${CDP_PORT}`, "--window-size=1500,950", "--no-first-run", "--no-default-browser-check", ...extra, FLOW_URL],
     { detached: true, stdio: "ignore" },
   );
   child.unref();

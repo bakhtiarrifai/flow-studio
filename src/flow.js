@@ -25,6 +25,9 @@ const UI = {
   modelPicker: "Select model family",
   quote: /credits?$/,
   agentToggle: "Agent",
+  newSession: "Start new session",
+  closeSession: "Close",
+  onboarding: /dismiss onboarding message/,
   clearPrompt: "Clear prompt",
   start: "Start generation",
   addMedia: "Add media menu",
@@ -84,9 +87,18 @@ async function requireProject() {
 }
 
 async function dismissOverlays(page) {
+  // With focus left on a navigation item, Escape slides the whole navigation out of reach; drop the focus first.
+  await page.evaluate(() => document.activeElement?.blur()).catch(() => {});
   await page.keyboard.press("Escape");
   const close = page.getByRole("button", { name: UI.closeAccount });
   if (await visible(close)) await close.click({ timeout: 5000 }).catch(() => {});
+  // A fresh project opens with the agent's session panel over the composer, and a one-time notice above it.
+  if (await visible(page.getByRole("button", { name: UI.newSession }))) {
+    await page.getByRole("button", { name: UI.closeSession, exact: true }).first().click({ timeout: 5000 }).catch(() => {});
+    await sleep(page, 800);
+  }
+  const notice = page.getByRole("button", { name: UI.onboarding });
+  if (await visible(notice)) await notice.click({ timeout: 5000 }).catch(() => {});
 }
 
 // The grid is virtualised and new tiles arrive at the top, so most steps begin by going back there.
@@ -783,7 +795,8 @@ export async function createCharacter(job) {
       throw new Error(`No image titled "${title}" in the Flow project.`);
     }
     await option.click();
-    await page.getByRole("button", { name: "Add media", exact: true }).click();
+    // Flow now builds the character as soon as the picture is chosen; the confirm button only appears on older pages.
+    await page.getByRole("button", { name: "Add media", exact: true }).click({ timeout: 4000 }).catch(() => {});
   } else {
     if (!existsSync(image)) throw new Error(`File not found: ${image}`);
     const chooser = page.waitForEvent("filechooser", { timeout: 10_000 });
