@@ -561,6 +561,27 @@ async function downloadResult(page, id, stem, quality) {
   return downloadTile(page, find, stem, quality);
 }
 
+// A finished video at rest has no media id, so it is known by its title. Flow first titles it with the prompt and,
+// some seconds later, retitles it with a short caption ("Man speaking at desk"), so an id keyed on the prompt then
+// points at nothing. While a result still carries the prompt as its title, wait for that retitle and follow it to the
+// newest fresh tile of the same kind (the uploaded start/end frames also appear as fresh tiles, so kinds must match).
+async function settleIds(page, ids, before, prompt, kind) {
+  const head = prompt.slice(0, 40);
+  const pending = (id) => id.startsWith("title:") && id.slice(6).startsWith(head);
+  let out = [...ids];
+  for (let waited = 0; waited < 90_000 && out.some(pending); waited += 3000) {
+    await scrollToTop(page);
+    await sleep(page, 3000);
+    const tiles = await readTiles(page);
+    const present = new Set(tiles.map((t) => t.id));
+    const fresh = tiles
+      .filter((t) => t.id && !before.has(t.id) && !out.includes(t.id) && !t.failed && t.kind === kind && !pending(t.id))
+      .map((t) => t.id);
+    out = out.map((id) => (pending(id) && !present.has(id) && fresh.length ? fresh.shift() : id));
+  }
+  return out;
+}
+
 // Flow titles results itself and reuses titles; giving each result this tool's own name makes it findable later.
 async function renameTile(page, tile, title) {
   try {
@@ -623,7 +644,8 @@ export async function generate(job) {
   await start.click();
   job.progress = "generating";
 
-  const ids = await waitForResults(page, before, s.variants ?? 1, s.type === "image" ? IMAGE_TIMEOUT : VIDEO_TIMEOUT, job, s.type);
+  const raw = await waitForResults(page, before, s.variants ?? 1, s.type === "image" ? IMAGE_TIMEOUT : VIDEO_TIMEOUT, job, s.type);
+  const ids = await settleIds(page, raw, before, s.prompt, s.type === "image" ? "image" : "video");
   mkdirSync(s.output_dir, { recursive: true });
   const files = [];
   for (const [i, id] of ids.entries()) {
@@ -632,7 +654,16 @@ export async function generate(job) {
     job.progress = "downloading";
     if (await renameTile(page, tileById(page, id), flowTitle)) (job.flow_titles ??= []).push(flowTitle);
     await sleep(page, 800);
-    files.push(...(await downloadResult(page, id, join(s.output_dir, label), s.download_quality)));
+    try {
+      files.push(...(await downloadResult(page, id, join(s.output_dir, label), s.download_quality)));
+    } catch (err) {
+      // A just-retitled video can offer only Delete in its menu for a while. The clip is paid for and safe in
+      // Flow, so wait, then fetch it by its current title the way flow_download does.
+      if (!id.startsWith("title:")) throw err;
+      addNote(job, `first download attempt failed (${String(err.message ?? err).slice(0, 80)}); retrying by title`);
+      await sleep(page, 20_000);
+      files.push(...(await downloadAsset(id.slice(6), join(s.output_dir, label), s.download_quality)));
+    }
     await sleep(page, 1500);
   }
   job.progress = undefined;
