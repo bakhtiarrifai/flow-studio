@@ -91,11 +91,30 @@ Flow takes frames or references in one clip, never both.
 | `flow_techniques` | 45 presets: camera moves, transitions, product and image looks |
 | `flow_voices`, `flow_narrate` | Narration with Google AI Studio voices (free key) or a voice on this computer |
 | `flow_cut` | Join clips with narration and music |
+| `flow_storyboard` | A film's plan on this computer: script, style, cast, and per scene the prompt, still, voice and settings |
+| `flow_resume` | Carry a film on with the account signed in now, making only the scenes that have no clip |
+| `flow_account` | The signed-in Google account and its credits; opens Google's page to switch account |
 | `flow_motion_plan`, `flow_motion_join` | Motion control from a reference video: split it into poses and clips, then retime and join the results |
 | `flow_motion_transfer` | True motion transfer with Kling Motion Control on kie.ai (paid from your kie.ai balance) |
 
 Files land in `~/flow-studio-out/<film>/`: `frame-NN` stills, `scene-NN` clips, `edit-NN` restyles, `clip-NN`
 downloads. State (browser profile, key, token) lives in `~/.flow-studio/`.
+
+## Storyboard and switching accounts
+
+A Flow project belongs to one Google account and cannot be shared, so nothing stored in Flow follows you to another
+account. Flow Studio keeps each film's plan in `<film>/storyboard.json` (the panel's **Storyboard** tab) next to its
+stills, clips and voices, and uploads from there whenever a scene needs them.
+
+When an account runs out of credits:
+
+1. **Switch account** (panel header, or `flow_account` with `switch`) opens Google's account page in the Flow window.
+   Pick or add the other account there.
+2. **Resume production** (or `flow_resume`) opens the film's project on that account, creating one with the film's
+   name if it has none, draws any missing stills (free), and makes only the scenes that have no clip yet.
+
+Nothing has to be downloaded first: the files are already on this computer. The project used on each account is
+remembered in the storyboard.
 
 ## Motion control
 

@@ -7,7 +7,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, 
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { getFlowPage } from "./browser.js";
-import { CAST_FILE, DOWNLOAD_DIR, HOME, OUT, safeName } from "./config.js";
+import { CAST_FILE, DOWNLOAD_DIR, FLOW_URL, HOME, OUT, safeName } from "./config.js";
 
 const UI = {
   tile: "flow-grid-tile-container",
@@ -42,6 +42,10 @@ const UI = {
   nav: "Project navigation",
   back: "Back button to go to previous page",
   portrait: "Generated character image",
+  googleAccount: 'a[aria-label^="Google Account:"]',
+  openProject: 'a[aria-label="Open project"]',
+  editProjectTitle: "Edit project title",
+  newProject: /New project/,
 };
 
 const IMAGE_TIMEOUT = 3 * 60_000;
@@ -70,6 +74,7 @@ export async function flowState(detailed = false) {
   const signedIn = !/\/about|accounts\.google\.com/.test(url) && !signInLink;
   const inProject = /\/project\//.test(url);
   const state = { url, signedIn, inProject };
+  if (signedIn) state.account = await accountEmail(page);
   if (!signedIn) state.hint = "Not signed in. Run `npm run login` in the flow-studio folder and sign in to Google in the window that opens.";
   else if (!inProject) state.hint = "Signed in, but no Flow project is open. Open or create a project in the Flow browser window.";
   else if (detailed) {
@@ -118,6 +123,68 @@ async function scrollDown(page) {
 }
 
 // The balance is only shown inside the account panel. Sign out lives there too, so nothing else in it is touched.
+// The signed-in address, from the account link Flow shows on every page: "Google Account: Name (address)".
+async function accountEmail(page) {
+  const label = await page.locator(UI.googleAccount).first().getAttribute("aria-label", { timeout: 3000 }).catch(() => null);
+  return label?.match(/\(([^()\s]+@[^()\s]+)\)/)?.[1];
+}
+
+// Google's own page for switching, adding or signing out of accounts; the person chooses there, by hand.
+export async function switchAccount() {
+  const page = await getFlowPage();
+  await page.goto(`https://accounts.google.com/SignOutOptions?continue=${encodeURIComponent(FLOW_URL)}`);
+  await page.bringToFront().catch(() => {});
+  return { opened: page.url() };
+}
+
+async function projectCards(page) {
+  await page.locator(`${UI.openProject}, button:has-text("New project")`).first().waitFor({ state: "visible", timeout: 30_000 });
+  await sleep(page, 1000);
+  return page.evaluate(({ open, edit }) => [...document.querySelectorAll(open)].map((a) => {
+    let card = a;
+    while (card && !card.querySelector(`button[aria-label="${edit}"]`)) card = card.parentElement;
+    const title = (card?.innerText ?? "").replace(/\b(edit|delete)\b/g, "").replace(/\s+/g, " ").trim();
+    return { href: a.getAttribute("href"), title };
+  }), { open: UI.openProject, edit: UI.editProjectTitle });
+}
+
+// Opens the project for a film on whichever account is signed in: the one remembered for this account, else the one
+// with the film's title, else a new project given that title. Projects belong to one account, so each account
+// gets its own project for the same film, filled from the files on this computer.
+export async function openProject({ title, projects = {} }) {
+  const page = await getFlowPage();
+  const state = await flowState();
+  if (!state.signedIn) throw new Error(state.hint);
+  const known = projects[state.account];
+  if (known && page.url().endsWith(known)) return { project: known, title, account: state.account, created: false };
+  await page.goto(FLOW_URL);
+  const cards = await projectCards(page);
+  const target = cards.find((c) => c.href === known) ?? cards.find((c) => c.title === title);
+  if (target) {
+    await page.goto(new URL(target.href, FLOW_URL).href);
+    await page.waitForURL(/\/project\//, { timeout: 30_000 });
+    await sleep(page, 2500);
+    return { project: target.href, title, account: state.account, created: false };
+  }
+  await page.getByRole("button", { name: UI.newProject }).first().click();
+  await page.waitForURL(/\/project\//, { timeout: 30_000 });
+  const href = new URL(page.url()).pathname;
+  // The new project carries a date as its title; it is renamed from the project list, where the title is a field.
+  await page.goto(FLOW_URL);
+  await projectCards(page);
+  const card = page.locator(`${UI.openProject}[href="${href}"]`).locator(`xpath=ancestor::*[.//button[@aria-label="${UI.editProjectTitle}"]][1]`);
+  await card.getByRole("button", { name: UI.editProjectTitle }).click();
+  await sleep(page, 500);
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type(title, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await sleep(page, 1500);
+  await page.goto(new URL(href, FLOW_URL).href);
+  await page.waitForURL(/\/project\//, { timeout: 30_000 });
+  await sleep(page, 2500);
+  return { project: href, title, account: state.account, created: true };
+}
+
 async function readCredits(page) {
   await dismissOverlays(page);
   await scrollToTop(page);

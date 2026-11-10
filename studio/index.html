@@ -70,6 +70,12 @@
   .filter select { width: auto; }
   .filmstrip { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0; margin-top: 6px; }
   .filmstrip .pose-card { flex: 0 0 120px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; font-size: 11px; text-align: center; }
+  .board-scene { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px 10px; margin-top: 10px; }
+  .board-scene .top { display: flex; align-items: center; gap: 8px; }
+  .board-scene .top input { width: 70px; }
+  .board-scene .top .state { margin-left: auto; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .board-scene .top .state.done { color: var(--ok); }
+  .board-scene textarea { min-height: 60px; }
   .filmstrip .pose-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 4px; }
 </style>
 </head>
@@ -78,6 +84,8 @@
   <h1>Flow <span>Studio</span></h1>
   <span id="session" class="pill">checking Flow…</span>
   <span id="plan" class="pill" hidden></span>
+  <span id="account" class="pill" hidden></span>
+  <button class="small" id="switch-account" title="Open Google's account page in the Flow window">Switch account</button>
   <span id="queue" class="pill" hidden></span>
   <span class="credits"><b id="credits">–</b> credits</span>
   <button class="small" id="refresh">Check Flow</button>
@@ -86,6 +94,27 @@
 <main>
   <div class="left">
     <nav id="tabs" role="tablist"></nav>
+
+    <section id="tab-board" hidden>
+      <p class="lead">The film's plan, kept on this computer with its files. Flow projects belong to one Google account, so this is what lets you carry on from another account when credits run out: switch account, then Resume.</p>
+      <div class="row">
+        <div><label for="b-title">Title</label><input id="b-title"></div>
+        <div><label for="b-aspect">Shape</label><select id="b-aspect"><option>16:9</option><option>9:16</option></select></div>
+      </div>
+      <label for="b-style">Style shared by every scene</label><input id="b-style" placeholder="cinematic, warm candlelight, 35mm film grain">
+      <label for="b-script">Script</label><textarea id="b-script"></textarea>
+      <label for="b-cast">Cast, one per line: Name | portrait file (optional) | look</label>
+      <textarea id="b-cast" placeholder="Kakak | /home/me/flow-studio-out/_cast/Kakak.jpg | thin man in his fifties, grey beard, worn brown robe"></textarea>
+      <h2>Scenes</h2>
+      <div id="b-scenes"></div>
+      <button class="small" data-run="addBoardScene">+ Add scene</button>
+      <div>
+        <button class="go" data-run="loadBoard">Load</button>
+        <button class="go" data-run="saveBoard">Save storyboard</button>
+        <button class="go" data-run="resumeBoard">Resume production</button>
+      </div>
+      <div class="msg" id="board-msg"></div>
+    </section>
 
     <section id="tab-cast">
       <p class="lead">Make a character once, then use it in any scene as a reference. Free.</p>
@@ -307,7 +336,7 @@ const asRefs = (text) => text.split(",").map((s) => s.trim()).filter(Boolean).ma
 const project = () => val("project") || "untitled";
 
 // ---- tabs
-const TABS = [["cast", "Cast", "free"], ["frames", "Frames", "free"], ["shots", "Shots", "credits"], ["motion", "Motion", "credits"], ["voice", "Voice", "free"], ["restyle", "Restyle", "credits"], ["cut", "Cut", "free"], ["library", "Library", "free"]];
+const TABS = [["board", "Storyboard", "free"], ["cast", "Cast", "free"], ["frames", "Frames", "free"], ["shots", "Shots", "credits"], ["motion", "Motion", "credits"], ["voice", "Voice", "free"], ["restyle", "Restyle", "credits"], ["cut", "Cut", "free"], ["library", "Library", "free"]];
 function show(tab) {
   for (const [id] of TABS) {
     $(`tab-${id}`).hidden = id !== tab;
@@ -488,6 +517,30 @@ const actions = {
     $("k-key").value = "";
     say("kie-key-msg", `Key ending …${r.ending} accepted by kie.ai and saved. Balance $${r.balance.usd}.`, "ok");
   },
+  addBoardScene() {
+    const shown = [...document.querySelectorAll("#b-scenes .board-scene")].map((n) => Number(n.querySelector(".b-num").value) || 0);
+    $("b-scenes").append(boardSceneCard({ number: Math.max(0, ...shown) + 1, prompt: "" }));
+  },
+  async loadBoard() {
+    const b = await api("storyboard", { project: project() });
+    fillBoard(b.exists === false ? { scenes: [] } : b);
+    say("board-msg", b.exists === false ? "No storyboard for this film yet. Fill it in and save." : `${b.progress}.`, "ok");
+  },
+  async saveBoard() {
+    const b = await api("storyboard", { project: project(), storyboard: readBoardForm() });
+    fillBoard(b);
+    say("board-msg", `Saved to ${b.path}. ${b.progress}.`, "ok");
+  },
+  async resumeBoard() {
+    const saved = await api("storyboard", { project: project(), storyboard: readBoardForm() });
+    fillBoard(saved);
+    const pending = saved.scenes.filter((s) => !s.done);
+    if (!pending.length) return say("board-msg", "Every scene already has a clip.", "ok");
+    const limit = pending.reduce((sum, s) => sum + (s.max_credits ?? 25), 0);
+    if (!confirm(`Make ${pending.length} scene(s) (${pending.map((s) => s.number).join(", ")}) on the account signed in to Flow now? Each is skipped if Flow's price is over its limit; at most ${limit} credits in all.`)) return;
+    const r = await api("resume", { project: project() });
+    say("board-msg", `Queued: ${r.queued.map((q) => q.file).join(", ")}. Watch Progress on the right.`, "ok");
+  },
   async joinMotion() {
     say("motion-join-msg", "Retiming and joining clips…");
     const info = await api("motion_info", { project: project() });
@@ -564,12 +617,62 @@ async function checkFlow() {
     $("session").textContent = ok ? "Flow connected" : s.hint || "Flow not ready";
     $("session").className = `pill ${ok ? "ok" : "bad"}`;
     $("plan").hidden = !s.plan; $("plan").textContent = s.plan || "";
+    $("account").hidden = !s.account; $("account").textContent = s.account || "";
     $("credits").textContent = s.credits_remaining ?? s.credits_last_seen ?? "–";
     $("root").textContent = s.output_dir;
     $("key-state").textContent = s.narration.google_key_saved ? "A key is saved. Paste a new one to replace it." : "No key saved yet.";
   } catch (err) { $("session").textContent = err.message; $("session").className = "pill bad"; }
 }
 $("refresh").onclick = checkFlow;
+$("switch-account").onclick = () => guard("board-msg", async () => {
+  if (!confirm("Open Google's account page in the Flow window? Choose or add the other account there, then press Check Flow.")) return;
+  await api("account", { switch: true });
+  say("board-msg", "Google's account page is open in the Flow window. Pick the account, then press Check Flow. Resume production carries the film on there.", "ok");
+}, $("switch-account"));
+
+// ---- storyboard form
+function boardSceneCard(s) {
+  const field = (cls, label, value, tag = "input", extra = {}) => {
+    const input = el(tag, { className: cls, value: value ?? "", ...extra });
+    return el("div", {}, el("label", { textContent: label }), input);
+  };
+  const economy = el("select", { className: "b-economy" }, ...[["", "Flow's current model"], ["lite", "Veo 3.1 Lite 720p (10)"], ["draft", "Omni Flash 360p (8)"]].map(([v, t]) => el("option", { value: v, textContent: t, selected: String(s.economy === true ? "draft" : s.economy ?? "") === v })));
+  const state = el("span", { className: `state ${s.done ? "done" : ""}`, textContent: s.done ? "clip done" : s.number && s.clip === undefined && s.done === false ? "to make" : "" });
+  const card = el("div", { className: "board-scene" },
+    el("div", { className: "top" }, el("b", { textContent: "Scene" }), el("input", { className: "b-num", type: "number", min: 1, value: s.number }), state,
+      el("button", { className: "small danger", textContent: "Remove", type: "button", onclick: () => card.remove() })),
+    field("b-prompt", "Video prompt", s.prompt, "textarea"),
+    el("div", { className: "row" }, field("b-frame", "Opening still (file)", s.frame ?? (s.frame_file ? s.frame_file.split("/").pop() : "")), field("b-voice", "Voice file", s.voice)),
+    field("b-frame-prompt", "Or draw the still from (free)", s.frame_prompt),
+    el("div", { className: "row" }, field("b-refs", "Cast to keep on-model (comma)", (s.references ?? []).join(", ")), field("b-line", "Spoken line", s.line)),
+    el("div", { className: "row" }, el("div", {}, el("label", { textContent: "Model" }), economy), field("b-max", "Credit limit", s.max_credits ?? 25, "input", { type: "number", min: 0 })),
+  );
+  card.dataset.extra = JSON.stringify({ last_frame: s.last_frame, notes: s.notes, model: s.model, resolution: s.resolution, duration: s.duration });
+  return card;
+}
+function fillBoard(b) {
+  $("b-title").value = b.title ?? ""; $("b-aspect").value = b.aspect_ratio ?? "16:9";
+  $("b-style").value = b.style ?? ""; $("b-script").value = b.script ?? "";
+  $("b-cast").value = (b.cast ?? []).map((c) => [c.name, c.image ?? "", c.look ?? ""].join(" | ")).join("\n");
+  $("b-scenes").replaceChildren(...(b.scenes ?? []).map(boardSceneCard));
+}
+function readBoardForm() {
+  const opt = (v) => (v && v.trim() ? v.trim() : undefined);
+  const cast = $("b-cast").value.split("\n").map((l) => l.split("|").map((p) => p.trim())).filter(([n]) => n).map(([name, image, look]) => ({ name, image: opt(image), look: opt(look) }));
+  const scenes = [...document.querySelectorAll("#b-scenes .board-scene")].map((c) => {
+    const q = (cls) => c.querySelector(`.${cls}`).value;
+    const extra = JSON.parse(c.dataset.extra || "{}");
+    const refs = q("b-refs").split(",").map((r) => r.trim()).filter(Boolean);
+    return {
+      ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== undefined && v !== null)),
+      number: Number(q("b-num")), prompt: q("b-prompt").trim(), frame: opt(q("b-frame")), frame_prompt: opt(q("b-frame-prompt")),
+      voice: opt(q("b-voice")), line: opt(q("b-line")), references: refs.length ? refs : undefined,
+      economy: opt(q("b-economy")), max_credits: q("b-max") === "" ? undefined : Number(q("b-max")),
+    };
+  });
+  for (const s of scenes) if (!s.prompt) throw new Error(`Scene ${s.number} has no video prompt.`);
+  return { title: opt($("b-title").value), aspect_ratio: $("b-aspect").value, style: opt($("b-style").value), script: opt($("b-script").value), cast, scenes };
+}
 
 const useButtons = {
   image: [["Start", "s-first", "shots"], ["End", "s-last", "shots"], ["Character", "m-character", "motion"]],

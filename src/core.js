@@ -8,6 +8,7 @@ import { z } from "zod";
 import { DEFAULT_MAX_CREDITS, OUT, PAUSE_MAX_S, PAUSE_MIN_S, UPLOAD_DIR, projectDir, safeName } from "./config.js";
 import * as flow from "./flow.js";
 import { cut, duration, lastFrame, motionJoin, motionPlan } from "./media.js";
+import { BOARD_FILE, boardShape, castImage, inFilm, pad, readBoard, sceneState, writeBoard } from "./storyboard.js";
 import { MOTION_MODELS, kieBalance, kieKey, motionEstimate, motionTransfer, saveKieKey } from "./kie.js";
 import { GOOGLE_VOICES, LOCAL_VOICE_HINT, googleKey, localVoices, saveGoogleKey, speakLocally, speakWithGoogle } from "./narrate.js";
 import { TECHNIQUES, techniqueById } from "./techniques.js";
@@ -121,6 +122,18 @@ export const shapes = {
   motion_info: {
     project,
   },
+  storyboard: {
+    project,
+    storyboard: boardShape.optional().describe("Give it to save (replaces the whole storyboard); omit to read. Scene state comes from the files on disk."),
+  },
+  resume: {
+    project,
+    scenes: z.array(z.number().int().min(1)).optional().describe("Scene numbers to make. Omit for every scene that has no clip yet."),
+    max_credits: z.number().min(0).optional().describe("Spending limit per scene where the storyboard sets none."),
+  },
+  account: {
+    switch: z.boolean().default(false).describe("Open Google's account page in the Flow window so the user can switch or add an account by hand."),
+  },
   motion_transfer: {
     project,
     character_image: z.string().min(1).describe("Who should perform: a JPG or PNG showing head, shoulders and torso. Absolute path, or relative to the project folder."),
@@ -168,6 +181,11 @@ const PLAYBOOK = {
     "Every scene has max_credits. Flow's own quote is read before generating and the scene is skipped if it is over.",
     "A clip that was generated but did not download is still in Flow: fetch it with flow_download. Never generate it again.",
     "flow_restyle has no quote beforehand and has cost more than a new clip. Always get the user's agreement first.",
+  ],
+  accounts: [
+    "Keep every film's plan in flow_storyboard: script, cast, and per scene the prompt, frame (or frame_prompt), voice and settings. Save it before generating.",
+    "A Flow project belongs to one Google account and cannot be shared, so nothing in Flow carries over to another account. The storyboard and the files on this computer do.",
+    "When credits run out: flow_account with switch, the user picks or signs in to another account in the Flow window, then flow_resume. It opens or creates the film's project on that account, uploads frames and cast portraits from this computer, draws missing stills for free, and makes only scenes that have no clip yet.",
   ],
   motion: [
     "flow_motion_plan splits a reference video into segments, free. Show the user any cuts it reports: motion does not carry across a cut.",
@@ -287,9 +305,33 @@ export class Studio {
   }
 
   async run(job) {
+    const p = job.params;
+    // A job that depends on another (opening the film's project, drawing its still) never runs after that one failed.
+    if (p.after) {
+      const dep = this.jobs.get(p.after);
+      if (dep?.status !== "done") throw new Error(`Skipped because ${dep?.label ?? "an earlier step"} did not succeed (${dep?.error ?? dep?.status ?? "unknown"}). Nothing was generated.`);
+    }
+    if (job.kind === "open_project") return this.openFilmProject(job);
+    if (p.frame_job) {
+      const still = this.jobs.get(p.frame_job)?.files.find((f) => /\.(jpe?g|png|webp)$/i.test(f));
+      if (!still) throw new Error("Its opening still was not drawn. Nothing was generated.");
+      p.first_frame = still;
+    }
     if (job.kind === "download") return flow.downloadAsset(job.params.name, job.params.stem, job.params.quality);
     if (job.kind === "generate") await this.resolveChain(job);
     return RUNNERS[job.kind](job);
+  }
+
+  async openFilmProject(job) {
+    const { title, dir } = job.params;
+    const board = readBoard(dir) ?? {};
+    const r = await flow.openProject({ title, projects: board.flow_projects });
+    if (r.account) {
+      const fresh = readBoard(dir) ?? board;
+      writeBoard(dir, { ...fresh, flow_projects: { ...fresh.flow_projects, [r.account]: r.project } });
+    }
+    job.note = `${r.created ? "created" : "opened"} Flow project "${title}"${r.account ? ` on ${r.account}` : ""}`;
+    return [];
   }
 
   // An exact join: the previous clip's real last frame becomes this clip's opening frame.
@@ -367,6 +409,85 @@ export class Studio {
       queued: queued.map((j) => ({ job_id: j.id, file: j.label, type: j.params.type, limit: j.params.max_credits })),
       next: "Call flow_wait until finished is true. Scenes run one at a time with a pause between them.",
     };
+  }
+
+  // ---- storyboard and accounts
+
+  boardView(dir, board) {
+    const scenes = (board.scenes ?? []).map((s) => {
+      const state = sceneState(dir, s);
+      return { ...s, done: state.done, clip: state.clip, frame_file: state.frame };
+    });
+    const done = scenes.filter((s) => s.done).length;
+    return { path: join(dir, BOARD_FILE), ...board, scenes, progress: `${done} of ${scenes.length} scenes have a clip` };
+  }
+
+  async storyboard({ project, storyboard }) {
+    const dir = projectDir(project);
+    const old = readBoard(dir);
+    if (storyboard) {
+      const numbers = storyboard.scenes.map((s) => s.number);
+      const twice = numbers.find((n, i) => numbers.indexOf(n) !== i);
+      if (twice) throw new Error(`Scene number ${twice} is used twice. Each scene needs its own number.`);
+      mkdirSync(dir, { recursive: true });
+      // Which Flow project holds this film on each account is Flow Studio's own record, kept across saves.
+      const board = { ...storyboard, scenes: [...storyboard.scenes].sort((a, b) => a.number - b.number), ...(old?.flow_projects ? { flow_projects: old.flow_projects } : {}) };
+      writeBoard(dir, board);
+      return { saved: true, ...this.boardView(dir, board) };
+    }
+    if (!old) return { exists: false, path: join(dir, BOARD_FILE), next: "Save one with flow_storyboard and a storyboard object." };
+    return this.boardView(dir, old);
+  }
+
+  // Carries a film on with whichever account is signed in: its own Flow project there, inputs uploaded from this
+  // computer, missing stills drawn first (free), and only the scenes that have no clip yet.
+  async resume({ project, scenes: only, max_credits }) {
+    const dir = projectDir(project);
+    const board = readBoard(dir);
+    if (!board) throw new Error(`No storyboard for "${project}". Save one with flow_storyboard first.`);
+    const style = (text) => (board.style && !text.includes(board.style) ? `${text.trim().replace(/[.\s]*$/, ".")} ${board.style}` : text);
+    const asRef = (r) => (/[/\\]|\.(jpe?g|png|webp)$/i.test(r) ? inFilm(dir, r) : (castImage(board, r) ?? `asset:${r.replace(/^asset:/, "")}`));
+    const todo = (board.scenes ?? []).filter((s) => (!only || only.includes(s.number)) && !sceneState(dir, s).done).sort((a, b) => a.number - b.number);
+    if (!todo.length) return { queued: [], note: "Every scene asked for already has a clip. Nothing was queued." };
+
+    const title = safeName(project);
+    const open = this.enqueue("open_project", { title, dir }, `${project}: open its Flow project`);
+    const queued = [{ job_id: open.id, file: "(Flow project)", type: "project" }];
+    for (const s of todo) {
+      const refs = (s.references ?? []).map(asRef);
+      const first = sceneState(dir, s).frame;
+      let frameJob;
+      if (!first && s.frame_prompt) {
+        const stem = `frame-${pad(s.number)}`;
+        frameJob = this.enqueue("generate", { prompt: style(s.frame_prompt), type: "image", aspect_ratio: board.aspect_ratio, reference_images: refs.length ? refs : undefined, variants: 1, max_credits: 0, download_quality: "original", output_dir: dir, file_stem: stem, after: open.id }, `${project}/${stem}`);
+        queued.push({ job_id: frameJob.id, file: stem, type: "image", limit: 0 });
+      }
+      const stem = `scene-${pad(s.number)}`;
+      const params = {
+        prompt: style(s.prompt), type: "video", aspect_ratio: board.aspect_ratio, variants: 1, download_quality: "original",
+        first_frame: first, frame_job: frameJob?.id, last_frame: s.last_frame && inFilm(dir, s.last_frame),
+        reference_images: !first && !frameJob && refs.length ? refs : undefined,
+        model: s.model, resolution: s.resolution, duration: s.duration,
+        max_credits: s.max_credits ?? max_credits ?? DEFAULT_MAX_CREDITS,
+        output_dir: dir, file_stem: stem, after: frameJob?.id ?? open.id,
+      };
+      const saving = ECONOMY[s.economy === true ? "draft" : s.economy];
+      if (saving && !params.model && !params.resolution) Object.assign(params, saving);
+      const job = this.enqueue("generate", params, `${project}/${stem}`);
+      queued.push({ job_id: job.id, file: stem, type: "video", limit: params.max_credits });
+    }
+    return { queued, scenes: todo.map((s) => s.number), next: "Opens the film's Flow project on the signed-in account, then makes the scenes in order. Follow with flow_wait." };
+  }
+
+  async account({ switch: change }) {
+    if (change) {
+      const pending = [...this.jobs.values()].filter((j) => j.status === "queued" || j.status === "running");
+      if (pending.length) throw new Error(`${pending.length} job(s) are still queued or running on this account. Wait for them, or cancel the queued ones, before switching.`);
+      await this.onPage("switching account", () => flow.switchAccount());
+      return { opened: true, next: "In the Flow window, choose or add the other Google account. Then call flow_account to confirm it, and flow_resume to carry on." };
+    }
+    const s = await this.onPage("account", () => flow.flowState(true));
+    return { account: s.account, signed_in: s.signedIn, plan: s.plan, credits_remaining: s.credits_remaining, ...(s.hint ? { hint: s.hint } : {}) };
   }
 
   async wait({ job_ids, timeout_seconds = 40 }) {
