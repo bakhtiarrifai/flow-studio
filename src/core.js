@@ -13,9 +13,12 @@ import { TECHNIQUES, techniqueById } from "./techniques.js";
 
 // ---------------------------------------------------------------- argument shapes
 
-// The cheapest video Flow offers that still has sound: Omni Flash at 360p quoted 8 credits for 8 s, against 24 at 720p
-// and 20 on Veo 3.1 - Fast (November 2026).
-const ECONOMY = { model: "Omni Flash", resolution: "360p" };
+// Cheaper video settings. Flow's quotes for an 8 s clip (November 2026): Omni Flash 8 credits at 360p and 24 at 720p,
+// Veo 3.1 - Lite 10 at 720p (it offers no other size), Veo 3.1 - Fast 20.
+const ECONOMY = {
+  draft: { model: "Omni Flash", resolution: "360p" },
+  lite: { model: "Veo 3.1 Lite" },
+};
 
 const project = z.string().min(1).default("untitled").describe("Folder name for this film's files under the output directory.");
 const quality = z.enum(["original", "upscaled"]).default("original").describe("'upscaled' asks Flow for its free upscale (1080p video / 2K stills) where the plan allows it; slower.");
@@ -27,7 +30,7 @@ const scene = z.object({
   aspect_ratio: z.enum(["16:9", "9:16", "1:1", "4:3", "3:4"]).optional().describe("Video supports 16:9 and 9:16."),
   duration: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(10)]).optional().describe("Clip length in seconds, for models that allow a choice."),
   resolution: z.enum(["360p", "720p"]).optional().describe("Only some models offer a choice (Omni Flash does; Veo 3.1 does not)."),
-  economy: z.boolean().default(false).describe(`Save credits: a video on ${ECONOMY.model} at ${ECONOMY.resolution} unless model or resolution is set. About a third of the 720p price; softer picture.`),
+  economy: z.union([z.boolean(), z.enum(["draft", "lite"])]).default(false).describe("Save credits on a video, unless model or resolution is set. 'draft' (or true): Omni Flash at 360p, 8 credits, softer picture. 'lite': Veo 3.1 - Lite at 720p, 10 credits, half the price of Veo 3.1 - Fast."),
   variants: z.number().int().min(1).max(4).default(1).describe("Takes to generate. Each take is charged."),
   first_frame: z.string().optional().describe("Opening frame: an absolute file path, or 'asset:<title>' for something already in the Flow project."),
   last_frame: z.string().optional().describe("Closing frame the clip must land on: a file path or 'asset:<title>'."),
@@ -146,7 +149,7 @@ const PLAYBOOK = {
   ],
   money: [
     "Stills on Flow's default image model cost nothing. Video costs credits per clip and per take.",
-    "economy: true makes a video on Omni Flash at 360p, about a third of the 720p price. Offer it for drafts and tests.",
+    "economy 'draft' makes a video on Omni Flash at 360p for 8 credits: offer it for drafts and tests. economy 'lite' uses Veo 3.1 - Lite at 720p for 10 credits, half of Veo 3.1 - Fast: offer it for finished clips on a budget.",
     "Every scene has max_credits. Flow's own quote is read before generating and the scene is skipped if it is over.",
     "A clip that was generated but did not download is still in Flow: fetch it with flow_download. Never generate it again.",
     "flow_restyle has no quote beforehand and has cost more than a new clip. Always get the user's agreement first.",
@@ -324,10 +327,8 @@ export class Studio {
     let previous;
     for (const [i, input] of scenes.entries()) {
       const { chain_previous, technique, economy, ...s } = input;
-      if (economy && s.type === "video") {
-        s.model ??= ECONOMY.model;
-        s.resolution ??= ECONOMY.resolution;
-      }
+      const saving = ECONOMY[economy === true ? "draft" : economy];
+      if (saving && s.type === "video" && !s.model && !s.resolution) Object.assign(s, saving);
       if (technique) {
         const preset = techniqueById(technique);
         if (!preset) throw new Error(`Scene ${i + 1}: no technique with id "${technique}". Call flow_techniques for the list.`);

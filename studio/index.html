@@ -136,7 +136,7 @@
         <div><label for="s-resolution">Quality</label><select id="s-resolution"><option value="">Flow's default</option><option>720p</option><option>360p</option></select></div>
         <div><label for="s-variants">Takes</label><select id="s-variants"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
       </div>
-      <label><input id="s-economy" type="checkbox"> Save credits: Omni Flash at 360p (about a third of the 720p price) unless Model or Quality is set</label>
+      <label for="s-economy">Save credits (used when Model and Quality are left blank)</label><select id="s-economy"><option value="">Off</option><option value="draft">Draft: Omni Flash 360p (8 credits)</option><option value="lite">Veo 3.1 Lite 720p (10 credits)</option></select>
       <h2>Where the shot starts and lands</h2>
       <label for="s-first">Opening frame</label><input id="s-first" placeholder="Path, or use a gallery still's “Start” button">
       <label for="s-last">Closing frame</label><input id="s-last" placeholder="Path, or use a gallery still's “End” button">
@@ -180,7 +180,7 @@
         <div><label for="m-maxcredits">Credit limit per clip</label><input id="m-maxcredits" type="number" min="0" value="15"></div>
         <div><label for="m-model">Model (blank = Flow default)</label><input id="m-model" placeholder="Omni Flash"></div>
       </div>
-      <label><input id="m-economy" type="checkbox"> Save credits: Omni Flash at 360p unless a model is set</label>
+      <label for="m-economy">Save credits (used when Model is blank)</label><select id="m-economy"><option value="">Off</option><option value="draft">Draft: Omni Flash 360p (8 credits)</option><option value="lite">Veo 3.1 Lite 720p (10 credits)</option></select>
       <button class="go" data-run="generateMotionClips">3. Queue motion clips</button>
       <div class="msg" id="motion-clips-msg"></div>
 
@@ -337,7 +337,7 @@ const actions = {
       duration: $("s-duration").value ? Number($("s-duration").value) : undefined, resolution: $("s-resolution").value || undefined,
       first_frame: val("s-first") || undefined, last_frame: val("s-last") || undefined, chain_from: val("s-chain") || undefined,
       reference_images: refs.length ? refs : undefined, max_credits: Number($("s-max").value), download_quality: $("s-upscale").value,
-      economy: $("s-economy").checked,
+      economy: $("s-economy").value || undefined,
     };
     const r = await api("generate", { project: project(), scenes: [scene] });
     say("shots-msg", `Queued as ${r.queued[0].file} (job ${r.queued[0].job_id}), limit ${r.queued[0].limit} credits.`, "ok");
@@ -440,7 +440,7 @@ const actions = {
       last_frame: stills[i + 1]?.path,
       max_credits: maxCr,
       model,
-      economy: $("m-economy").checked,
+      economy: $("m-economy").value || undefined,
     }));
     const r = await api("generate", { project: project(), scenes });
     say("motion-clips-msg", `${r.queued.length} clip(s) queued in Flow. Prices will be checked against ${maxCr} cr limit before each clip.`, "ok");

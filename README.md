@@ -64,8 +64,9 @@ needed.
 2. **Frames**: draw the key stills. Free on Flow's default image model, so fix the look here.
 3. **Voice**: record the narration early; its length says how much footage the film needs. Free.
 4. **Shots**: turn stills into clips. Costs credits; Flow's own quote is read first and a shot over its
-   `max_credits` is skipped. For drafts, `economy: true` (the panel's **Save credits** box) uses Omni Flash at 360p:
-   Flow quoted 8 credits for an 8-second clip, against 24 at 720p and 20 on Veo 3.1 - Fast (November 2026).
+   `max_credits` is skipped. To spend less, set `economy` (the panel's **Save credits**): `"draft"` uses
+   Omni Flash at 360p and `"lite"` uses Veo 3.1 - Lite at 720p. For an 8-second clip Flow quoted 8 and 10 credits,
+   against 20 on Veo 3.1 - Fast (November 2026).
 5. **Cut**: join clips, narration and music with FFmpeg. Free.
 
 Continuity between shots:
