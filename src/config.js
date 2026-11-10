@@ -11,12 +11,13 @@ export const OUT = env.FLOW_STUDIO_OUTPUT ?? join(homedir(), "flow-studio-out");
 export const PROFILE_DIR = join(HOME, "browser-profile");
 export const DOWNLOAD_DIR = join(HOME, "downloads");
 export const UPLOAD_DIR = join(HOME, "uploads");
-export const TOKEN_FILE = join(HOME, "token");
 export const KEY_FILE = join(HOME, "gemini-key");
 export const KIE_KEY_FILE = join(HOME, "kie-key");
 export const CAST_FILE = join(HOME, "cast.json");
 
 export const PORT = Number(env.FLOW_STUDIO_PORT ?? 8791);
+// One token per port, so a second Flow Studio on another port never replaces the token this one's clients use.
+export const TOKEN_FILE = join(HOME, PORT === 8791 ? "token" : `token-${PORT}`);
 export const CDP_PORT = Number(env.FLOW_STUDIO_CDP_PORT ?? 9344);
 export const FLOW_URL = "https://flow.google.com/";
 
