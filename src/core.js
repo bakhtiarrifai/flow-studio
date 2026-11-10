@@ -1,13 +1,14 @@
 // The operations behind both the MCP tools and the control panel, plus the job queue that keeps Flow to one task at a time.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { DEFAULT_MAX_CREDITS, OUT, PAUSE_MAX_S, PAUSE_MIN_S, UPLOAD_DIR, projectDir, safeName } from "./config.js";
 import * as flow from "./flow.js";
 import { cut, duration, lastFrame, motionJoin, motionPlan } from "./media.js";
+import { MOTION_MODELS, kieBalance, kieKey, motionEstimate, motionTransfer, saveKieKey } from "./kie.js";
 import { GOOGLE_VOICES, LOCAL_VOICE_HINT, googleKey, localVoices, saveGoogleKey, speakLocally, speakWithGoogle } from "./narrate.js";
 import { TECHNIQUES, techniqueById } from "./techniques.js";
 
@@ -120,8 +121,22 @@ export const shapes = {
   motion_info: {
     project,
   },
+  motion_transfer: {
+    project,
+    character_image: z.string().min(1).describe("Who should perform: a JPG or PNG showing head, shoulders and torso. Absolute path, or relative to the project folder."),
+    video: z.string().min(1).describe("The performance to copy: MP4 or MOV, 3 to 10 s (30 s with orientation 'video'), head, shoulders and torso visible."),
+    model: z.enum(Object.keys(MOTION_MODELS)).default("kling-2.6").describe("kling-2.6 is cheaper (12.6 kie credits per second at 720p); kling-3.0 is newer (22.7)."),
+    resolution: z.enum(["720p", "1080p"]).default("720p"),
+    orientation: z.enum(["image", "video"]).default("video").describe("Whose framing and facing the result follows: the video's (up to 30 s) or the image's (up to 10 s)."),
+    prompt: z.string().max(2500).optional().describe("Optional: setting, style or details to add."),
+    max_usd: z.number().min(0).default(1).describe("Spending limit. The estimate is checked against it before anything is uploaded."),
+    quote_only: z.boolean().default(false).describe("Only return the estimate and the kie.ai balance. Free."),
+    confirmed: z.boolean().default(false).describe("Set only after the user has agreed to the estimate. Charged to the user's kie.ai balance, not Flow credits."),
+  },
   // Panel only: these are deliberately not MCP tools.
   set_key: { key: z.string().min(1) },
+  set_kie_key: { key: z.string().min(1) },
+  kie_balance: {},
   outputs: {},
   discard: { path: z.string().min(1) },
 };
@@ -160,6 +175,7 @@ const PLAYBOOK = {
     "Clips, paid: one scene per segment with first_frame and last_frame set to the two stills, the segment's clip_duration, and a prompt describing the movement you see between the poses. State the credit total first.",
     "flow_motion_join retimes the clips to the source's timing and joins them, free.",
     "Motion between two poses is the model's own interpolation, not a copy of the source: shorter segments follow it more closely.",
+    "For a true copy of the movement, flow_motion_transfer sends one character image and one reference video to Kling Motion Control on kie.ai. It is paid from the user's kie.ai balance in dollars: get its quote with quote_only, tell the user, and pass confirmed only after they agree.",
   ],
 };
 
@@ -316,6 +332,7 @@ export class Studio {
       queue: { running: busy ? this.view(busy) : null, queued: jobs.filter((j) => j.status === "queued").length, failed: jobs.filter((j) => j.status === "failed").length, pacing: this.pacing },
       output_dir: OUT,
       narration: { google_key_saved: Boolean(googleKey()) },
+      motion_transfer: { kie_key_saved: Boolean(kieKey()) },
       playbook: PLAYBOOK,
     };
   }
@@ -472,6 +489,45 @@ export class Studio {
   // ---- panel only
 
   set_key = ({ key }) => saveGoogleKey(key);
+  set_kie_key = ({ key }) => saveKieKey(key);
+  kie_balance = () => kieBalance();
+
+  // Runs beside Flow's queue rather than in it: kie.ai is a separate service and a task takes minutes.
+  async motion_transfer({ project, character_image, video, model, resolution, orientation, prompt, max_usd, quote_only, confirmed }) {
+    const dir = projectDir(project);
+    const image = inProject(dir, character_image);
+    const source = inProject(dir, video);
+    for (const f of [image, source]) if (!existsSync(f)) throw new Error(`File not found: ${f}`);
+    const seconds = await duration(source);
+    const estimate = motionEstimate({ model, resolution, orientation, seconds });
+    const quote = { model, resolution, seconds: Number(seconds.toFixed(2)), estimate_usd: estimate.usd, estimate_kie_credits: estimate.kie_credits };
+    if (quote_only) return { ...quote, balance: kieKey() ? await kieBalance() : "no kie.ai key saved", credits: 0 };
+    if (estimate.usd > max_usd) throw new Error(`Estimated $${estimate.usd} is over the limit of $${max_usd}. Nothing was sent. Raise max_usd, or use a shorter video, 720p or kling-2.6.`);
+    if (!confirmed) throw new Error(`This costs about $${estimate.usd} from the kie.ai balance. Ask the user, then call again with confirmed: true.`);
+    if (!kieKey()) throw new Error("No kie.ai API key saved. Paste it into the panel's Motion tab.");
+    mkdirSync(dir, { recursive: true });
+    const stem = numbered("transfer", nextNumber(dir, "transfer"));
+    const job = { id: randomUUID().slice(0, 8), kind: "motion_transfer", label: `${project}/${stem}`, status: "running", params: { model, resolution }, files: [], attempts: 1, created: new Date().toISOString(), note: `estimate $${estimate.usd} on kie.ai` };
+    this.jobs.set(job.id, job);
+    // Reserves the file name so a second transfer started meanwhile gets the next number.
+    writeFileSync(join(dir, `${stem}.mp4.part`), "");
+    motionTransfer({ image, video: source, model, resolution, orientation, prompt, target: join(dir, `${stem}.mp4`) }, (p) => (job.progress = p))
+      .then((r) => {
+        job.files = [r.file];
+        job.note = `kie.ai task ${r.task_id}, charged ${r.kie_credits_charged ?? "?"} kie credits (estimate ${estimate.kie_credits})`;
+        job.status = "done";
+      })
+      .catch((err) => {
+        job.status = "failed";
+        job.error = err instanceof Error ? err.message : String(err);
+      })
+      .finally(() => {
+        job.progress = undefined;
+        job.finished = new Date().toISOString();
+        rmSync(join(dir, `${stem}.mp4.part`), { force: true });
+      });
+    return { job_id: job.id, file: `${stem}.mp4`, ...quote, next: "Takes a few minutes. Call flow_wait with this job id until finished is true." };
+  }
 
   async outputs() {
     const projects = [];

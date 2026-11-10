@@ -194,6 +194,23 @@
       <button class="go" data-run="joinMotion">4. Retime & Join</button>
       <div class="msg" id="motion-join-msg"></div>
       <div id="motion-result-view"></div>
+
+      <h2>Or: true motion transfer with Kling (kie.ai)</h2>
+      <p class="hint">Copies the movement exactly, in one step, from the reference video and the character image above (an image file, not a Cast name). Paid in dollars from your kie.ai balance, not Flow credits.</p>
+      <div class="row">
+        <div><label for="k-model">Model</label><select id="k-model"><option value="kling-2.6">Kling 2.6 (≈ $0.063/s at 720p)</option><option value="kling-3.0">Kling 3.0 (≈ $0.11/s at 720p)</option></select></div>
+        <div><label for="k-res">Quality</label><select id="k-res"><option>720p</option><option>1080p</option></select></div>
+        <div><label for="k-orient">Follow framing of</label><select id="k-orient"><option value="video">The video (up to 30 s)</option><option value="image">The image (up to 10 s)</option></select></div>
+        <div><label for="k-max">Limit (USD)</label><input id="k-max" type="number" min="0" step="0.1" value="1"></div>
+      </div>
+      <button class="go" data-run="quoteTransfer">Price check (free)</button>
+      <button class="go" data-run="runTransfer">Transfer motion</button>
+      <div class="msg" id="transfer-msg"></div>
+      <label for="k-key">kie.ai API key</label>
+      <input id="k-key" type="password" autocomplete="off" placeholder="From kie.ai/api-key">
+      <p class="hint">Checked with kie.ai, then stored only on this computer. Never paste it into a chat.</p>
+      <button class="go" data-run="saveKieKey">Save kie.ai key</button>
+      <div class="msg" id="kie-key-msg"></div>
     </section>
 
     <section id="tab-voice" hidden>
@@ -444,6 +461,32 @@ const actions = {
     }));
     const r = await api("generate", { project: project(), scenes });
     say("motion-clips-msg", `${r.queued.length} clip(s) queued in Flow. Prices will be checked against ${maxCr} cr limit before each clip.`, "ok");
+  },
+  async transferArgs() {
+    const videoFile = await upload($("m-video-file"));
+    if (videoFile) $("m-video").value = videoFile;
+    const charFile = await upload($("m-character-file"));
+    if (charFile) $("m-character").value = charFile;
+    if (!val("m-video")) throw new Error("Choose a reference video in step 1.");
+    if (!/\.(jpe?g|png)$/i.test(val("m-character"))) throw new Error("Choose a JPG or PNG character image in step 2.");
+    return { project: project(), video: val("m-video"), character_image: val("m-character"), model: $("k-model").value, resolution: $("k-res").value, orientation: $("k-orient").value, prompt: val("m-prompt") || undefined, max_usd: Number($("k-max").value) };
+  },
+  async quoteTransfer() {
+    const r = await api("motion_transfer", { ...(await actions.transferArgs()), quote_only: true });
+    const bal = typeof r.balance === "object" ? `Balance $${r.balance.usd} (${r.balance.credits} kie credits).` : "No kie.ai key saved yet.";
+    say("transfer-msg", `${r.seconds} s at ${r.resolution} on ${r.model}: about $${r.estimate_usd} (${r.estimate_kie_credits} kie credits). ${bal}`, "ok");
+  },
+  async runTransfer() {
+    const args = await actions.transferArgs();
+    const q = await api("motion_transfer", { ...args, quote_only: true });
+    if (!confirm(`Spend about $${q.estimate_usd} of your kie.ai balance on this ${q.seconds} s motion transfer?`)) return;
+    const r = await api("motion_transfer", { ...args, confirmed: true });
+    say("transfer-msg", `Started as ${r.file} (job ${r.job_id}). It takes a few minutes and appears in the Library when done.`, "ok");
+  },
+  async saveKieKey() {
+    const r = await api("set_kie_key", { key: val("k-key") });
+    $("k-key").value = "";
+    say("kie-key-msg", `Key ending …${r.ending} accepted by kie.ai and saved. Balance $${r.balance.usd}.`, "ok");
   },
   async joinMotion() {
     say("motion-join-msg", "Retiming and joining clips…");

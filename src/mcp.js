@@ -44,6 +44,7 @@ const TOOLS = {
   flow_cut: ["cut", "Join clips into one MP4 with optional narration and music, locally with FFmpeg. No credits."],
   flow_motion_plan: ["motion_plan", "Prepare motion control from a reference video: split it into short reference clips, grab the pose at each boundary and report shot changes. Local, no credits. The playbook's motion section gives the next steps."],
   flow_motion_info: ["motion_info", "Read the current motion plan, extracted poses, and segments for a project. Local, no credits."],
+  flow_motion_transfer: ["motion_transfer", "True motion transfer with Kling Motion Control on kie.ai: one character image performs the movement of one reference video (3-30 s). Paid in dollars from the user's kie.ai balance, not Flow credits. Call with quote_only first, tell the user the estimate, and set confirmed only after they agree. Returns a job id for flow_wait."],
   flow_motion_join: ["motion_join", "Retime the clips made from a motion plan to the reference video's timing and join them, optionally with its sound. Local, no credits."],
 };
 

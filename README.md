@@ -92,6 +92,7 @@ Flow takes frames or references in one clip, never both.
 | `flow_voices`, `flow_narrate` | Narration with Google AI Studio voices (free key) or a voice on this computer |
 | `flow_cut` | Join clips with narration and music |
 | `flow_motion_plan`, `flow_motion_join` | Motion control from a reference video: split it into poses and clips, then retime and join the results |
+| `flow_motion_transfer` | True motion transfer with Kling Motion Control on kie.ai (paid from your kie.ai balance) |
 
 Files land in `~/flow-studio-out/<film>/`: `frame-NN` stills, `scene-NN` clips, `edit-NN` restyles, `clip-NN`
 downloads. State (browser profile, key, token) lives in `~/.flow-studio/`.
@@ -111,6 +112,13 @@ The stills pin the poses, but the movement between two poses is the model's own,
 closely than true motion transfer. Shorter segments follow it better and cost more. Use one continuous shot of one
 person at moderate speed.
 
+For an exact copy of the movement, `flow_motion_transfer` (the Motion tab's **Kling** section) sends one character
+image and one reference video of 3 to 30 seconds to Kling Motion Control on [kie.ai](https://kie.ai). It is paid in
+dollars from your kie.ai balance, billed per second of the reference video: about $0.063/s on Kling 2.6 and $0.11/s on
+Kling 3.0 at 720p (November 2026). Ask for `quote_only` first; a transfer runs only with `confirmed` and within
+`max_usd`. Save the API key in the Motion tab, or set `KIE_API_KEY`. It is checked with kie.ai and stored in
+`~/.flow-studio/kie-key`. Uploads stay on kie.ai's storage for 24 hours.
+
 ## Google narration voices
 
 Create a free key at aistudio.google.com/apikey and paste it into the panel's **Voice** tab. It is checked with
@@ -122,7 +130,7 @@ Google and stored in `~/.flow-studio/gemini-key`, readable only by you. Do not p
 `FLOW_STUDIO_BROWSER` (browser executable), `FLOW_STUDIO_FFMPEG` / `FLOW_STUDIO_FFPROBE`, `FLOW_STUDIO_PORT` (8791),
 `FLOW_STUDIO_CDP_PORT` (9344),
 `FLOW_STUDIO_OUTPUT`, `FLOW_STUDIO_HOME`, `FLOW_STUDIO_PAUSE_MIN_S` / `FLOW_STUDIO_PAUSE_MAX_S` (25 / 70),
-`GEMINI_API_KEY`, `FLOW_STUDIO_GEMINI_TTS` (text-to-speech model name).
+`GEMINI_API_KEY`, `KIE_API_KEY`, `FLOW_STUDIO_GEMINI_TTS` (text-to-speech model name).
 
 ## When Flow changes
 

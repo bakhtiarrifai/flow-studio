@@ -13,6 +13,7 @@ export const DOWNLOAD_DIR = join(HOME, "downloads");
 export const UPLOAD_DIR = join(HOME, "uploads");
 export const TOKEN_FILE = join(HOME, "token");
 export const KEY_FILE = join(HOME, "gemini-key");
+export const KIE_KEY_FILE = join(HOME, "kie-key");
 export const CAST_FILE = join(HOME, "cast.json");
 
 export const PORT = Number(env.FLOW_STUDIO_PORT ?? 8791);
