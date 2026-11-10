@@ -240,14 +240,23 @@ async function pick(page, name) {
   }
 }
 
+// "Omni Flash" names "Omni 1.2 Flash": every word must appear. Flow lists the newest version first and marks models it
+// is retiring with "Leaving <date>", so the first match that is not leaving wins.
+function modelMatches(name, model) {
+  const have = name.toLowerCase();
+  return model.toLowerCase().split(/\s+/).filter(Boolean).every((word) => have.includes(word));
+}
+
 async function pickModel(page, model) {
   const button = page.getByRole("button", { name: UI.modelPicker });
-  if ((await button.innerText()).toLowerCase().includes(model.toLowerCase())) return;
+  const current = oneLine(await button.innerText());
+  if (modelMatches(current, model)) return;
   await button.click();
   const items = page.getByRole("menuitem");
   await items.first().waitFor({ state: "visible", timeout: 5000 });
-  const names = (await items.allInnerTexts()).map(oneLine);
-  const index = names.findIndex((n) => n.toLowerCase().includes(model.toLowerCase()));
+  const names = (await items.allInnerTexts()).map((n) => oneLine(n).replace(/^volume_up\s*/, ""));
+  const matches = names.map((n, i) => (modelMatches(n, model) ? i : -1)).filter((i) => i >= 0);
+  const index = matches.find((i) => !/leaving/i.test(names[i])) ?? matches[0] ?? -1;
   if (index < 0) {
     await page.keyboard.press("Escape");
     throw new Error(`Flow has no model called "${model}" here. It offers: ${names.join(", ")}`);

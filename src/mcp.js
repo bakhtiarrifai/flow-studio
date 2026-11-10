@@ -3,11 +3,26 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Studio, shapes } from "./core.js";
-import { remoteStudio, startServer } from "./server.js";
+import { ownerGone, remoteStudio, startServer } from "./server.js";
 
 const local = new Studio();
-const role = await startServer(local);
-const studio = role === "client" ? remoteStudio() : local;
+const remote = remoteStudio();
+let studio = local;
+const claim = async () => {
+  studio = (await startServer(local, { onHandover: () => (studio = remote) })) === "client" ? remote : local;
+};
+await claim();
+
+// A client whose owner has exited takes the port itself instead of failing every call from then on.
+async function call(operation, args) {
+  try {
+    return await studio[operation](args);
+  } catch (err) {
+    if (studio !== remote || !(await ownerGone())) throw err;
+    await claim();
+    return studio[operation](args);
+  }
+}
 
 // name -> [operation, description]. set_key, outputs and discard are panel-only on purpose.
 const TOOLS = {
@@ -27,6 +42,9 @@ const TOOLS = {
   flow_voices: ["voices", "Narrator voices available, and whether Google's are set up."],
   flow_narrate: ["narrate", "Record narration to a WAV file, free: Google AI Studio voices (with a style note) or a voice on this computer. Returns the duration, which tells you how much footage the film needs."],
   flow_cut: ["cut", "Join clips into one MP4 with optional narration and music, locally with FFmpeg. No credits."],
+  flow_motion_plan: ["motion_plan", "Prepare motion control from a reference video: split it into short reference clips, grab the pose at each boundary and report shot changes. Local, no credits. The playbook's motion section gives the next steps."],
+  flow_motion_info: ["motion_info", "Read the current motion plan, extracted poses, and segments for a project. Local, no credits."],
+  flow_motion_join: ["motion_join", "Retime the clips made from a motion plan to the reference video's timing and join them, optionally with its sound. Local, no credits."],
 };
 
 const server = new McpServer({ name: "flow-studio", version: "0.1.0" });
@@ -34,7 +52,7 @@ const server = new McpServer({ name: "flow-studio", version: "0.1.0" });
 for (const [name, [operation, description]] of Object.entries(TOOLS)) {
   server.registerTool(name, { description, inputSchema: shapes[operation] }, async (args) => {
     try {
-      const result = await studio[operation](args ?? {});
+      const result = await call(operation, args ?? {});
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };

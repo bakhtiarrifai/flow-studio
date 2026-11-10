@@ -5,7 +5,8 @@ import { PORT } from "./config.js";
 import { Studio } from "./core.js";
 import { startServer } from "./server.js";
 
-const role = await startServer(new Studio());
+// A newer Flow Studio may later take over the panel; this standalone one then has nothing left to do.
+const role = await startServer(new Studio(), { onHandover: () => setTimeout(() => process.exit(0), 500) });
 const url = `http://127.0.0.1:${PORT}`;
 if (role === "none") {
   console.error(`Port ${PORT} is in use by another program. Set FLOW_STUDIO_PORT to a free port.`);

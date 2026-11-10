@@ -7,11 +7,15 @@ import { basename, extname, isAbsolute, join, relative, resolve, sep } from "nod
 import { z } from "zod";
 import { DEFAULT_MAX_CREDITS, OUT, PAUSE_MAX_S, PAUSE_MIN_S, UPLOAD_DIR, projectDir, safeName } from "./config.js";
 import * as flow from "./flow.js";
-import { cut, duration, lastFrame } from "./media.js";
+import { cut, duration, lastFrame, motionJoin, motionPlan } from "./media.js";
 import { GOOGLE_VOICES, LOCAL_VOICE_HINT, googleKey, localVoices, saveGoogleKey, speakLocally, speakWithGoogle } from "./narrate.js";
 import { TECHNIQUES, techniqueById } from "./techniques.js";
 
 // ---------------------------------------------------------------- argument shapes
+
+// The cheapest video Flow offers that still has sound: Omni Flash at 360p quoted 8 credits for 8 s, against 24 at 720p
+// and 20 on Veo 3.1 - Fast (November 2026).
+const ECONOMY = { model: "Omni Flash", resolution: "360p" };
 
 const project = z.string().min(1).default("untitled").describe("Folder name for this film's files under the output directory.");
 const quality = z.enum(["original", "upscaled"]).default("original").describe("'upscaled' asks Flow for its free upscale (1080p video / 2K stills) where the plan allows it; slower.");
@@ -19,10 +23,11 @@ const quality = z.enum(["original", "upscaled"]).default("original").describe("'
 const scene = z.object({
   prompt: z.string().min(1).describe("One continuous shot, in English: subject and action, shot size and camera move, location, style, light, sound."),
   type: z.enum(["video", "image"]).default("video").describe("Stills are free on Flow's default image model; get them right before paying for video."),
-  model: z.string().optional().describe("Model name as Flow shows it, e.g. 'Omni Flash', 'Veo 3.1 - Fast', 'Nano Banana'. Omit to keep whatever Flow has selected."),
+  model: z.string().optional().describe("Model name as Flow shows it, e.g. 'Omni Flash', 'Veo 3.1 - Lite', 'Nano Banana'. Every word must appear in Flow's name; the newest match wins. Omit to keep whatever Flow has selected."),
   aspect_ratio: z.enum(["16:9", "9:16", "1:1", "4:3", "3:4"]).optional().describe("Video supports 16:9 and 9:16."),
   duration: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(10)]).optional().describe("Clip length in seconds, for models that allow a choice."),
-  resolution: z.enum(["360p", "720p"]).optional(),
+  resolution: z.enum(["360p", "720p"]).optional().describe("Only some models offer a choice (Omni Flash does; Veo 3.1 does not)."),
+  economy: z.boolean().default(false).describe(`Save credits: a video on ${ECONOMY.model} at ${ECONOMY.resolution} unless model or resolution is set. About a third of the 720p price; softer picture.`),
   variants: z.number().int().min(1).max(4).default(1).describe("Takes to generate. Each take is charged."),
   first_frame: z.string().optional().describe("Opening frame: an absolute file path, or 'asset:<title>' for something already in the Flow project."),
   last_frame: z.string().optional().describe("Closing frame the clip must land on: a file path or 'asset:<title>'."),
@@ -98,6 +103,20 @@ export const shapes = {
     hold_last_frame: z.boolean().default(true).describe("If the narration outlasts the footage, hold the final frame until it ends. Better: generate enough footage and set this false."),
     output_name: z.string().default("film"),
   },
+  motion_plan: {
+    project,
+    video: z.string().min(1).describe("The performance to copy: one continuous shot of one person, not too fast. Absolute path, or relative to the project folder."),
+    segment_seconds: z.number().min(1).max(10).default(3).describe("Longest source time per generated clip. Shorter follows the motion more closely but costs more clips."),
+  },
+  motion_join: {
+    project,
+    clips: z.array(z.string()).min(1).describe("One generated clip per plan segment, in order (absolute, or relative to the project folder)."),
+    source_audio: z.boolean().default(false).describe("Lay the reference video's sound over the result."),
+    output_name: z.string().default("motion"),
+  },
+  motion_info: {
+    project,
+  },
   // Panel only: these are deliberately not MCP tools.
   set_key: { key: z.string().min(1) },
   outputs: {},
@@ -127,9 +146,17 @@ const PLAYBOOK = {
   ],
   money: [
     "Stills on Flow's default image model cost nothing. Video costs credits per clip and per take.",
+    "economy: true makes a video on Omni Flash at 360p, about a third of the 720p price. Offer it for drafts and tests.",
     "Every scene has max_credits. Flow's own quote is read before generating and the scene is skipped if it is over.",
     "A clip that was generated but did not download is still in Flow: fetch it with flow_download. Never generate it again.",
     "flow_restyle has no quote beforehand and has cost more than a new clip. Always get the user's agreement first.",
+  ],
+  motion: [
+    "flow_motion_plan splits a reference video into segments, free. Show the user any cuts it reports: motion does not carry across a cut.",
+    "Stills, free: for every pose, one image scene with reference_images [the character, that pose file], asking for this character in exactly the pose of the second image, in the wanted setting. Check them before any video.",
+    "Clips, paid: one scene per segment with first_frame and last_frame set to the two stills, the segment's clip_duration, and a prompt describing the movement you see between the poses. State the credit total first.",
+    "flow_motion_join retimes the clips to the source's timing and joins them, free.",
+    "Motion between two poses is the model's own interpolation, not a copy of the source: shorter segments follow it more closely.",
   ],
 };
 
@@ -296,7 +323,11 @@ export class Studio {
     const queued = [];
     let previous;
     for (const [i, input] of scenes.entries()) {
-      const { chain_previous, technique, ...s } = input;
+      const { chain_previous, technique, economy, ...s } = input;
+      if (economy && s.type === "video") {
+        s.model ??= ECONOMY.model;
+        s.resolution ??= ECONOMY.resolution;
+      }
       if (technique) {
         const preset = techniqueById(technique);
         if (!preset) throw new Error(`Scene ${i + 1}: no technique with id "${technique}". Call flow_techniques for the list.`);
@@ -413,6 +444,28 @@ export class Studio {
     const film = await cut({ dir, clips: clips?.map((c) => inProject(dir, c)), voiceover: voiceover && inProject(dir, voiceover), music: music && inProject(dir, music), ...rest });
     const note = film.held_last_frame > 0.5 ? `The narration outlasts the footage, so the last frame is frozen for ${film.held_last_frame} s. Add a shot to avoid the freeze.` : undefined;
     return { ...film, credits: 0, ...(note ? { note } : {}) };
+  }
+
+  async motion_plan({ project, video, segment_seconds }) {
+    const dir = projectDir(project);
+    return { ...(await motionPlan({ video: inProject(dir, video), dir, segment_seconds })), credits: 0, next: "Follow the motion section of the playbook in flow_status." };
+  }
+
+  async motion_join({ project, clips, source_audio, output_name }) {
+    const dir = projectDir(project);
+    return { ...(await motionJoin({ dir, plan: join(dir, "motion", "plan.json"), clips: clips.map((c) => inProject(dir, c)), source_audio, output_name })), credits: 0 };
+  }
+
+  async motion_info({ project }) {
+    const dir = projectDir(project);
+    const planPath = join(dir, "motion", "plan.json");
+    if (!existsSync(planPath)) return { has_plan: false };
+    try {
+      const plan = JSON.parse(readFileSync(planPath, "utf8"));
+      return { has_plan: true, plan, dir };
+    } catch {
+      return { has_plan: false };
+    }
   }
 
   // ---- panel only

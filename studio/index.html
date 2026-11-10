@@ -68,6 +68,9 @@
   td.acts { white-space: nowrap; text-align: right; }
   .filter { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
   .filter select { width: auto; }
+  .filmstrip { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0; margin-top: 6px; }
+  .filmstrip .pose-card { flex: 0 0 120px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; font-size: 11px; text-align: center; }
+  .filmstrip .pose-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -133,6 +136,7 @@
         <div><label for="s-resolution">Quality</label><select id="s-resolution"><option value="">Flow's default</option><option>720p</option><option>360p</option></select></div>
         <div><label for="s-variants">Takes</label><select id="s-variants"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
       </div>
+      <label><input id="s-economy" type="checkbox"> Save credits: Omni Flash at 360p (about a third of the 720p price) unless Model or Quality is set</label>
       <h2>Where the shot starts and lands</h2>
       <label for="s-first">Opening frame</label><input id="s-first" placeholder="Path, or use a gallery still's “Start” button">
       <label for="s-last">Closing frame</label><input id="s-last" placeholder="Path, or use a gallery still's “End” button">
@@ -144,6 +148,52 @@
       </div>
       <button class="go" data-run="makeShot">Queue shot</button>
       <div class="msg" id="shots-msg"></div>
+    </section>
+
+    <section id="tab-motion" hidden>
+      <p class="lead">Transfer movement from a reference video onto your character (Artlist / Kling Motion Control style) using Flow poses and frame interpolation.</p>
+
+      <h2>1. Performance Reference Video</h2>
+      <label for="m-video">Reference video (path or upload)</label>
+      <input id="m-video" placeholder="Upload below or click “Motion Ref” on a gallery video">
+      <div class="row">
+        <div><label for="m-video-file">Upload video</label><input id="m-video-file" type="file" accept="video/*"></div>
+        <div><label for="m-seg">Max clip length (s)</label><input id="m-seg" type="number" min="1" max="10" value="3"></div>
+      </div>
+      <button class="go" data-run="planMotion">1. Extract poses & plan</button>
+      <div class="msg" id="motion-plan-msg"></div>
+      <div id="motion-plan-view"></div>
+
+      <h2>2. Character Reference</h2>
+      <label for="m-character">Character to animate</label>
+      <div class="row">
+        <div><input id="m-character" list="cast-names" placeholder="Character from Cast, or image path"></div>
+        <div><input id="m-character-file" type="file" accept="image/*"></div>
+      </div>
+      <label for="m-prompt">Setting & style</label>
+      <input id="m-prompt" placeholder="cinematic lighting, photorealistic, 8k">
+      <button class="go" data-run="generateMotionStills">2. Draw character poses (free stills)</button>
+      <div class="msg" id="motion-stills-msg"></div>
+
+      <h2>3. Generate Motion Clips</h2>
+      <div class="row">
+        <div><label for="m-maxcredits">Credit limit per clip</label><input id="m-maxcredits" type="number" min="0" value="15"></div>
+        <div><label for="m-model">Model (blank = Flow default)</label><input id="m-model" placeholder="Omni Flash"></div>
+      </div>
+      <label><input id="m-economy" type="checkbox"> Save credits: Omni Flash at 360p unless a model is set</label>
+      <button class="go" data-run="generateMotionClips">3. Queue motion clips</button>
+      <div class="msg" id="motion-clips-msg"></div>
+
+      <h2>4. Retime & Join Film</h2>
+      <div class="row">
+        <div><label for="m-name">Output film name</label><input id="m-name" value="motion"></div>
+        <div style="display:flex;align-items:flex-end;margin-bottom:4px">
+          <label style="margin:0"><input id="m-audio" type="checkbox" checked> Lay source audio over result</label>
+        </div>
+      </div>
+      <button class="go" data-run="joinMotion">4. Retime & Join</button>
+      <div class="msg" id="motion-join-msg"></div>
+      <div id="motion-result-view"></div>
     </section>
 
     <section id="tab-voice" hidden>
@@ -240,7 +290,7 @@ const asRefs = (text) => text.split(",").map((s) => s.trim()).filter(Boolean).ma
 const project = () => val("project") || "untitled";
 
 // ---- tabs
-const TABS = [["cast", "Cast", "free"], ["frames", "Frames", "free"], ["shots", "Shots", "credits"], ["voice", "Voice", "free"], ["restyle", "Restyle", "credits"], ["cut", "Cut", "free"], ["library", "Library", "free"]];
+const TABS = [["cast", "Cast", "free"], ["frames", "Frames", "free"], ["shots", "Shots", "credits"], ["motion", "Motion", "credits"], ["voice", "Voice", "free"], ["restyle", "Restyle", "credits"], ["cut", "Cut", "free"], ["library", "Library", "free"]];
 function show(tab) {
   for (const [id] of TABS) {
     $(`tab-${id}`).hidden = id !== tab;
@@ -287,6 +337,7 @@ const actions = {
       duration: $("s-duration").value ? Number($("s-duration").value) : undefined, resolution: $("s-resolution").value || undefined,
       first_frame: val("s-first") || undefined, last_frame: val("s-last") || undefined, chain_from: val("s-chain") || undefined,
       reference_images: refs.length ? refs : undefined, max_credits: Number($("s-max").value), download_quality: $("s-upscale").value,
+      economy: $("s-economy").checked,
     };
     const r = await api("generate", { project: project(), scenes: [scene] });
     say("shots-msg", `Queued as ${r.queued[0].file} (job ${r.queued[0].job_id}), limit ${r.queued[0].limit} credits.`, "ok");
@@ -331,7 +382,126 @@ const actions = {
         el("button", { className: "small danger", textContent: "Flow's Trash", onclick: () => guard("library-msg", async () => { if (!confirm(`Move "${a.name}" to Flow's Trash? It can be restored from Trash in Flow. Files on this computer are not touched.`)) return; await api("trash", { name: a.name, confirmed: true }); actions.loadLibrary(); }) }),
       ))));
   },
+  async planMotion() {
+    say("motion-plan-msg", "Analyzing video and extracting poses…");
+    const videoFile = await upload($("m-video-file"));
+    if (videoFile) $("m-video").value = videoFile;
+    const v = val("m-video");
+    if (!v) throw new Error("Please specify or upload a reference video.");
+    const seg = Number($("m-seg").value) || 3;
+    const r = await api("motion_plan", { project: project(), video: v, segment_seconds: seg });
+    renderMotionPlan(r);
+    say("motion-plan-msg", `Plan ready: ${r.duration.toFixed(1)}s video split into ${r.segments.length} segment(s). Shape: ${r.aspect_ratio}.${r.cuts?.length ? `\nWarning: ${r.cuts.length} scene cut(s) detected.` : ""}`, "ok");
+  },
+  async generateMotionStills() {
+    say("motion-stills-msg", "Preparing pose scenes…");
+    const charFile = await upload($("m-character-file"));
+    if (charFile) $("m-character").value = charFile;
+    const char = val("m-character");
+    if (!char) throw new Error("Select a character from Cast or upload a character reference image.");
+    const info = await api("motion_info", { project: project() });
+    if (!info.has_plan) throw new Error("No motion plan found. Run '1. Extract poses & plan' first.");
+    const plan = info.plan;
+    const promptExtra = val("m-prompt");
+    const charRef = asRefs(char)[0] || char;
+    const poses = plan.poses || (plan.segments ? plan.segments.map((s) => s.pose_start).concat(plan.segments[plan.segments.length - 1].pose_end) : []);
+    const uniquePoses = [...new Set(poses)];
+    const scenes = uniquePoses.map((posePath) => ({
+      prompt: `${char} in the exact physical pose shown in the reference image. ${promptExtra}`.trim(),
+      type: "image",
+      aspect_ratio: plan.aspect_ratio || "16:9",
+      reference_images: [charRef, posePath],
+      max_credits: 0,
+    }));
+    const r = await api("generate", { project: project(), scenes });
+    say("motion-stills-msg", `${r.queued.length} pose still(s) queued in Flow (Free). Verify them in the Gallery before generating video clips.`, "ok");
+  },
+  async generateMotionClips() {
+    say("motion-clips-msg", "Preparing motion interpolation clips…");
+    const info = await api("motion_info", { project: project() });
+    if (!info.has_plan) throw new Error("No motion plan found. Run '1. Extract poses & plan' first.");
+    const plan = info.plan;
+    const promptExtra = val("m-prompt");
+    const maxCr = Number($("m-maxcredits").value) || 15;
+    const model = val("m-model") || undefined;
+    const data = await api("outputs");
+    const name = project().replace(/[^\w.-]+/g, "_");
+    const pFiles = data.projects.find((p) => p.project === name)?.files ?? [];
+    const stills = pFiles.filter((f) => f.kind === "image" && !f.path.includes("/motion/pose-"));
+    if (stills.length < plan.segments.length + 1) {
+      if (!confirm(`Found ${stills.length} still(s) in this project, but plan has ${plan.segments.length} segments (${plan.segments.length + 1} poses needed). Proceed anyway?`)) return;
+    }
+    const scenes = plan.segments.map((seg, i) => ({
+      prompt: `Continuous natural movement connecting start frame to end frame. ${promptExtra}`.trim(),
+      type: "video",
+      aspect_ratio: plan.aspect_ratio || "16:9",
+      duration: seg.clip_duration || 4,
+      first_frame: stills[i]?.path,
+      last_frame: stills[i + 1]?.path,
+      max_credits: maxCr,
+      model,
+      economy: $("m-economy").checked,
+    }));
+    const r = await api("generate", { project: project(), scenes });
+    say("motion-clips-msg", `${r.queued.length} clip(s) queued in Flow. Prices will be checked against ${maxCr} cr limit before each clip.`, "ok");
+  },
+  async joinMotion() {
+    say("motion-join-msg", "Retiming and joining clips…");
+    const info = await api("motion_info", { project: project() });
+    if (!info.has_plan) throw new Error("No motion plan found.");
+    const plan = info.plan;
+    const data = await api("outputs");
+    const name = project().replace(/[^\w.-]+/g, "_");
+    const pFiles = data.projects.find((p) => p.project === name)?.files ?? [];
+    const clips = pFiles.filter((f) => f.kind === "video" && !f.path.includes("/motion/") && !f.name.startsWith(val("m-name") || "motion")).map((f) => f.path);
+    if (clips.length < plan.segments.length) {
+      if (!confirm(`The plan has ${plan.segments.length} segments, but only ${clips.length} clip(s) were found. Try to join anyway?`)) return;
+    }
+    const r = await api("motion_join", {
+      project: project(),
+      clips: clips.slice(0, plan.segments.length),
+      source_audio: $("m-audio").checked,
+      output_name: val("m-name") || "motion",
+    });
+    say("motion-join-msg", `Joined video saved: ${r.output} (${r.duration} s)${r.source_audio ? " with source audio" : ""}.`, "ok");
+    renderMotionResult(r.output);
+    refreshOutputs(true);
+  },
 };
+
+function renderMotionPlan(plan) {
+  const container = $("motion-plan-view");
+  if (!container) return;
+  const poses = plan.poses || (plan.segments ? plan.segments.map((s) => s.pose_start).concat(plan.segments[plan.segments.length - 1].pose_end) : []);
+  const strip = el("div", { className: "filmstrip" });
+  poses.forEach((p, i) => {
+    const time = (i * (plan.duration / Math.max(1, poses.length - 1))).toFixed(1);
+    strip.append(el("div", { className: "pose-card" },
+      el("img", { src: media(p), alt: `Pose ${i + 1}`, loading: "lazy" }),
+      el("div", { textContent: `Pose ${i + 1} (${time}s)` })
+    ));
+  });
+  container.replaceChildren(
+    el("div", { className: "hint", textContent: `${plan.segments?.length || 0} segments | Shape: ${plan.aspect_ratio || "16:9"} | Audio: ${plan.source_has_audio ? "Yes" : "No"}` }),
+    strip
+  );
+}
+
+function renderMotionResult(videoPath) {
+  const container = $("motion-result-view");
+  if (!container) return;
+  container.replaceChildren(
+    el("video", { src: media(videoPath), controls: true, autoplay: true, style: "width:100%;border-radius:8px;margin-top:8px" })
+  );
+}
+
+async function loadMotionPlan() {
+  try {
+    const info = await api("motion_info", { project: project() });
+    if (info.has_plan) renderMotionPlan(info.plan);
+    else if ($("motion-plan-view")) $("motion-plan-view").innerHTML = "";
+  } catch {}
+}
 
 async function guard(msgId, fn, button) {
   if (button) button.disabled = true;
@@ -359,8 +529,8 @@ async function checkFlow() {
 $("refresh").onclick = checkFlow;
 
 const useButtons = {
-  image: [["Start", "s-first", "shots"], ["End", "s-last", "shots"]],
-  video: [["Continue", "s-chain", "shots"], ["Add to cut", "k-clips", "cut"]],
+  image: [["Start", "s-first", "shots"], ["End", "s-last", "shots"], ["Character", "m-character", "motion"]],
+  video: [["Continue", "s-chain", "shots"], ["Add to cut", "k-clips", "cut"], ["Motion Ref", "m-video", "motion"]],
   audio: [["Narration", "k-voice", "cut"], ["Music", "k-music", "cut"]],
 };
 function card(file) {
@@ -405,7 +575,7 @@ async function refreshOutputs(force) {
   galleryKey = key;
   $("gallery").replaceChildren(...(files.length ? files.map(card) : [el("div", { className: "empty", textContent: "Nothing saved for this film yet." })]));
 }
-$("project").oninput = () => refreshOutputs(true);
+$("project").oninput = () => { refreshOutputs(true); loadMotionPlan(); };
 
 async function loadVoices() {
   try {
@@ -423,6 +593,7 @@ $("v-engine").onchange = loadVoices;
     for (const t of techniques.filter((t) => t.category !== "image")) $("s-technique").append(el("option", { value: t.id, textContent: `${t.name}${t.needs ? ` (needs ${t.needs})` : ""}` }));
   } catch {}
   loadVoices();
+  loadMotionPlan();
   refreshOutputs();
   checkFlow();
   setInterval(refreshOutputs, 3000);

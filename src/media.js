@@ -1,6 +1,6 @@
 // Everything done locally with FFmpeg: last-frame grabs, narration clean-up and the final cut. No Flow credits.
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { FFMPEG, FFPROBE, safeName } from "./config.js";
@@ -12,7 +12,7 @@ export const FFMPEG_HINT =
 
 async function ffmpeg(args) {
   try {
-    await exec(FFMPEG, ["-hide_banner", "-y", ...args], { maxBuffer: 32 * 1024 * 1024 });
+    return await exec(FFMPEG, ["-hide_banner", "-y", ...args], { maxBuffer: 32 * 1024 * 1024 });
   } catch (err) {
     if (err.code === "ENOENT") throw new Error(`FFmpeg is not installed (${FFMPEG_HINT}).`);
     throw new Error(`FFmpeg failed: ${String(err.stderr ?? err).trim().slice(-600)}`);
@@ -27,14 +27,31 @@ export async function duration(file) {
 async function probe(file) {
   let stdout;
   try {
-    ({ stdout } = await exec(FFPROBE, ["-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration", "-of", "json", file]));
+    ({ stdout } = await exec(FFPROBE, [
+      "-v", "error",
+      "-show_entries", "stream=codec_type,width,height,duration,r_frame_rate:format=duration",
+      "-of", "json",
+      file,
+    ]));
   } catch {
     throw new Error(`"${basename(file)}" is not a playable video (an unfinished download, perhaps). Remove it from the cut or pick another clip.`);
   }
   const data = JSON.parse(stdout);
   const video = data.streams.find((s) => s.codec_type === "video");
   if (!video?.width) throw new Error(`"${basename(file)}" has no video stream.`);
-  return { width: video.width, height: video.height, duration: Number(data.format.duration), hasAudio: data.streams.some((s) => s.codec_type === "audio") };
+  let fps = 24;
+  if (video.r_frame_rate) {
+    const [num, den] = video.r_frame_rate.split("/").map(Number);
+    if (den && num) fps = Math.round(num / den);
+  }
+  const dur = Number(video.duration || data.format?.duration);
+  return {
+    width: video.width,
+    height: video.height,
+    duration: dur,
+    fps,
+    hasAudio: data.streams.some((s) => s.codec_type === "audio"),
+  };
 }
 
 // The final frame of a clip, so the next shot can open exactly where this one ended.
@@ -135,4 +152,86 @@ export async function cut({ dir, clips, voiceover, music, music_volume = 0.25, c
     output,
   ]);
   return { output, clips: list, duration: Number((footage + hold).toFixed(2)), held_last_frame: Number(hold.toFixed(2)) };
+}
+
+// ---------------------------------------------------------------- motion control
+
+const CLIP_LENGTHS = [4, 6, 8, 10];
+const MAX_SEGMENTS = 50;
+
+// Times where the shot changes. Motion cannot carry across a cut, so the plan warns about them.
+async function shotChanges(video) {
+  const { stderr } = await ffmpeg(["-i", video, "-map", "0:v:0", "-vf", "select='gt(scene,0.4)',showinfo", "-f", "null", "-"]);
+  return [...stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number(Number(m[1]).toFixed(2)));
+}
+
+// Splits a performance video into short reference clips and grabs the pose at every boundary. Local and free.
+// Flow clips come in fixed lengths, so each segment records the length to order and motionJoin retimes it back.
+export async function motionPlan({ video, dir, segment_seconds }) {
+  if (!existsSync(video)) throw new Error(`File not found: ${video}`);
+  const { duration: total, hasAudio, fps = 30 } = await probe(video);
+  if (!Number.isFinite(total) || total <= 0) throw new Error(`Could not read the length of "${basename(video)}".`);
+  const count = Math.ceil(total / segment_seconds);
+  if (count > MAX_SEGMENTS) throw new Error(`${count} segments is more than the ${MAX_SEGMENTS} one flow_generate call can queue. Use a longer segment_seconds or a shorter video.`);
+
+  const folder = join(dir, "motion");
+  mkdirSync(folder, { recursive: true });
+  const seconds = total / count;
+  const clipLength = CLIP_LENGTHS.find((l) => l >= seconds);
+  const at = (i) => Number((i * seconds).toFixed(3));
+  const encoder = await videoEncoder();
+
+  const poses = [];
+  for (let i = 0; i <= count; i++) {
+    const pose = join(folder, `pose-${String(i + 1).padStart(2, "0")}.jpg`);
+    // The very end of a file holds no frame to seek to, so the last pose is taken just before it.
+    await ffmpeg(["-ss", String(Math.min(at(i), Math.max(0, total - 0.1))), "-i", video, "-frames:v", "1", "-update", "1", "-q:v", "2", pose]);
+    poses.push(pose);
+  }
+
+  const segments = [];
+  for (let i = 0; i < count; i++) {
+    const reference_clip = join(folder, `chunk-${String(i + 1).padStart(2, "0")}.mp4`);
+    await ffmpeg(["-ss", String(at(i)), "-i", video, "-t", String(Number(seconds.toFixed(3))), "-map", "0:v:0", "-an", ...encoder, "-pix_fmt", "yuv420p", reference_clip]);
+    segments.push({ index: i + 1, start: at(i), end: at(i + 1), seconds: Number(seconds.toFixed(3)), clip_duration: clipLength, reference_clip, pose_start: poses[i], pose_end: poses[i + 1] });
+  }
+
+  // Read from a decoded frame: phone videos store portrait footage as landscape plus a rotation flag.
+  const frame = await probe(poses[0]);
+  const cuts = await shotChanges(video);
+  const plan = { source: video, source_has_audio: hasAudio, duration: Number(total.toFixed(3)), fps, aspect_ratio: frame.height > frame.width ? "9:16" : "16:9", cuts, poses, segments };
+  const path = join(folder, "plan.json");
+  writeFileSync(path, JSON.stringify(plan, null, 2));
+  return { plan: path, ...plan };
+}
+
+// Joins the clips made from a plan, retiming each to the length of its segment so the performance keeps its timing.
+// The clips' own sound is dropped because retiming ruins it; the source video's sound can replace it.
+export async function motionJoin({ dir, plan: path, clips, source_audio, output_name }) {
+  if (!existsSync(path)) throw new Error(`No motion plan at ${path}. Call flow_motion_plan first.`);
+  const plan = JSON.parse(readFileSync(path, "utf8"));
+  if (clips.length !== plan.segments.length) throw new Error(`The plan has ${plan.segments.length} segments but ${clips.length} clips were given. Give one clip per segment, in order.`);
+  for (const f of clips) if (!existsSync(f)) throw new Error(`File not found: ${f}`);
+  const infos = await Promise.all(clips.map(probe));
+  const { width, height } = infos.reduce((a, b) => (b.width * b.height > a.width * a.height ? b : a));
+  const targetFps = plan.fps || 30;
+
+  const filters = infos.map((info, i) => {
+    const stretch = plan.segments[i].seconds / info.duration;
+    return `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=(PTS-STARTPTS)*${stretch.toFixed(5)},fps=${targetFps}[v${i}]`;
+  });
+  filters.push(`${infos.map((_, i) => `[v${i}]`).join("")}concat=n=${clips.length}:v=1:a=0[v]`);
+
+  const withAudio = source_audio && plan.source_has_audio && existsSync(plan.source);
+  const output = join(dir, safeName(output_name).replace(/\.mp4$/i, "") + ".mp4");
+  await ffmpeg([
+    ...clips.flatMap((c) => ["-i", c]),
+    ...(withAudio ? ["-i", plan.source] : []),
+    "-filter_complex", filters.join(";"),
+    "-map", "[v]",
+    ...(withAudio ? ["-map", `${clips.length}:a:0`, "-c:a", "aac", "-b:a", "192k", "-shortest"] : []),
+    ...(await videoEncoder()), "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    output,
+  ]);
+  return { output, duration: await duration(output), source_audio: Boolean(withAudio) };
 }

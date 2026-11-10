@@ -64,7 +64,8 @@ needed.
 2. **Frames**: draw the key stills. Free on Flow's default image model, so fix the look here.
 3. **Voice**: record the narration early; its length says how much footage the film needs. Free.
 4. **Shots**: turn stills into clips. Costs credits; Flow's own quote is read first and a shot over its
-   `max_credits` is skipped.
+   `max_credits` is skipped. For drafts, `economy: true` (the panel's **Save credits** box) uses Omni Flash at 360p:
+   Flow quoted 8 credits for an 8-second clip, against 24 at 720p and 20 on Veo 3.1 - Fast (November 2026).
 5. **Cut**: join clips, narration and music with FFmpeg. Free.
 
 Continuity between shots:
@@ -89,9 +90,25 @@ Flow takes frames or references in one clip, never both.
 | `flow_techniques` | 45 presets: camera moves, transitions, product and image looks |
 | `flow_voices`, `flow_narrate` | Narration with Google AI Studio voices (free key) or a voice on this computer |
 | `flow_cut` | Join clips with narration and music |
+| `flow_motion_plan`, `flow_motion_join` | Motion control from a reference video: split it into poses and clips, then retime and join the results |
 
 Files land in `~/flow-studio-out/<film>/`: `frame-NN` stills, `scene-NN` clips, `edit-NN` restyles, `clip-NN`
 downloads. State (browser profile, key, token) lives in `~/.flow-studio/`.
+
+## Motion control
+
+Puts one person's movement from a reference video onto your character, in the spirit of Kling Motion Control but built
+from what Flow's composer is known to accept:
+
+1. `flow_motion_plan` splits the video into segments of at most `segment_seconds` and saves the pose at each boundary
+   in `<film>/motion/`. Free.
+2. Draw your character in each pose with `flow_generate` stills, using the character and the pose as references. Free.
+3. Make one clip per segment, from one still to the next, with `first_frame` and `last_frame`. Costs credits.
+4. `flow_motion_join` retimes the clips to the source's timing and joins them. Free.
+
+The stills pin the poses, but the movement between two poses is the model's own, so this follows the source less
+closely than true motion transfer. Shorter segments follow it better and cost more. Use one continuous shot of one
+person at moderate speed.
 
 ## Google narration voices
 
