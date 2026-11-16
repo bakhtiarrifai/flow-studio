@@ -101,10 +101,15 @@
         <div><label for="b-title">Title</label><input id="b-title"></div>
         <div><label for="b-aspect">Shape</label><select id="b-aspect"><option>16:9</option><option>9:16</option></select></div>
       </div>
-      <label for="b-style">Style shared by every scene</label><input id="b-style" placeholder="cinematic, warm candlelight, 35mm film grain">
+      <label for="b-preset">Style preset</label><select id="b-preset"><option value="">none</option><option>3d-animation</option><option>claymation</option><option>concept-sketch</option><option>charcoal</option></select>
+      <label for="b-style">Style shared by every scene (added after the preset)</label><input id="b-style" placeholder="cinematic, warm candlelight, 35mm film grain">
       <label for="b-script">Script</label><textarea id="b-script"></textarea>
       <label for="b-cast">Cast, one per line: Name | portrait file (optional) | look</label>
       <textarea id="b-cast" placeholder="Kakak | /home/me/flow-studio-out/_cast/Kakak.jpg | thin man in his fifties, grey beard, worn brown robe"></textarea>
+      <label for="b-locations">Locations, one per line: Name | image file (optional) | description</label>
+      <textarea id="b-locations" placeholder="Gang Madinah | | sunlit mud-brick alley, warm golden light"></textarea>
+      <label for="b-props">Props, one per line: Name | image file (optional) | description</label>
+      <textarea id="b-props"></textarea>
       <h2>Scenes</h2>
       <div id="b-scenes"></div>
       <button class="small" data-run="addBoardScene">+ Add scene</button>
@@ -641,7 +646,9 @@ function boardSceneCard(s) {
   const card = el("div", { className: "board-scene" },
     el("div", { className: "top" }, el("b", { textContent: "Scene" }), el("input", { className: "b-num", type: "number", min: 1, value: s.number }), state,
       el("button", { className: "small danger", textContent: "Remove", type: "button", onclick: () => card.remove() })),
-    field("b-prompt", "Video prompt", s.prompt, "textarea"),
+    field("b-prompt", "Video prompt (or fill the three below)", s.prompt, "textarea"),
+    el("div", { className: "row" }, field("b-visual", "Visual", s.visual), field("b-motion", "Motion", s.motion), field("b-audio", "Audio", s.audio)),
+    el("div", { className: "row" }, field("b-title-s", "Shot title", s.title), field("b-assets", "Linked assets: cast, locations, props (comma)", (s.assets ?? []).join(", "))),
     el("div", { className: "row" }, field("b-frame", "Opening still (file)", s.frame ?? (s.frame_file ? s.frame_file.split("/").pop() : "")), field("b-voice", "Voice file", s.voice)),
     field("b-frame-prompt", "Or draw the still from (free)", s.frame_prompt),
     el("div", { className: "row" }, field("b-refs", "Cast to keep on-model (comma)", (s.references ?? []).join(", ")), field("b-line", "Spoken line", s.line)),
@@ -650,28 +657,41 @@ function boardSceneCard(s) {
   card.dataset.extra = JSON.stringify({ last_frame: s.last_frame, notes: s.notes, model: s.model, resolution: s.resolution, duration: s.duration });
   return card;
 }
+// Fields the form has no box for (a character's physical/clothing/backstory/voice, a location's time of day) are kept
+// from the last load, matched by name, so saving from the panel never drops them.
+let boardCast = [], boardLocations = [], boardProps = [];
 function fillBoard(b) {
   $("b-title").value = b.title ?? ""; $("b-aspect").value = b.aspect_ratio ?? "16:9";
-  $("b-style").value = b.style ?? ""; $("b-script").value = b.script ?? "";
-  $("b-cast").value = (b.cast ?? []).map((c) => [c.name, c.image ?? "", c.look ?? ""].join(" | ")).join("\n");
+  $("b-style").value = b.style ?? ""; $("b-script").value = b.script ?? ""; $("b-preset").value = b.style_preset ?? "";
+  boardCast = b.cast ?? [];
+  $("b-cast").value = boardCast.map((c) => [c.name, c.image ?? "", c.look ?? ""].join(" | ")).join("\n");
+  const lines = (list) => (list ?? []).map((a) => [a.name, a.image ?? "", a.description ?? ""].join(" | ")).join("\n");
+  boardLocations = b.locations ?? []; boardProps = b.props ?? [];
+  $("b-locations").value = lines(boardLocations); $("b-props").value = lines(boardProps);
   $("b-scenes").replaceChildren(...(b.scenes ?? []).map(boardSceneCard));
 }
 function readBoardForm() {
   const opt = (v) => (v && v.trim() ? v.trim() : undefined);
-  const cast = $("b-cast").value.split("\n").map((l) => l.split("|").map((p) => p.trim())).filter(([n]) => n).map(([name, image, look]) => ({ name, image: opt(image), look: opt(look) }));
+  const keep = (list, name) => list.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? {};
+  const rows = (id) => $(id).value.split("\n").map((l) => l.split("|").map((p) => p.trim())).filter(([n]) => n);
+  const cast = rows("b-cast").map(([name, image, look]) => ({ ...keep(boardCast, name), name, image: opt(image), look: opt(look) }));
+  const locations = rows("b-locations").map(([name, image, description]) => ({ ...keep(boardLocations, name), name, image: opt(image), description: opt(description) }));
+  const props = rows("b-props").map(([name, image, description]) => ({ ...keep(boardProps, name), name, image: opt(image), description: opt(description) }));
   const scenes = [...document.querySelectorAll("#b-scenes .board-scene")].map((c) => {
     const q = (cls) => c.querySelector(`.${cls}`).value;
     const extra = JSON.parse(c.dataset.extra || "{}");
     const refs = q("b-refs").split(",").map((r) => r.trim()).filter(Boolean);
+    const assets = q("b-assets").split(",").map((r) => r.trim()).filter(Boolean);
     return {
       ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== undefined && v !== null)),
-      number: Number(q("b-num")), prompt: q("b-prompt").trim(), frame: opt(q("b-frame")), frame_prompt: opt(q("b-frame-prompt")),
+      number: Number(q("b-num")), prompt: opt(q("b-prompt")), visual: opt(q("b-visual")), motion: opt(q("b-motion")), audio: opt(q("b-audio")),
+      title: opt(q("b-title-s")), assets: assets.length ? assets : undefined, frame: opt(q("b-frame")), frame_prompt: opt(q("b-frame-prompt")),
       voice: opt(q("b-voice")), line: opt(q("b-line")), references: refs.length ? refs : undefined,
       economy: opt(q("b-economy")), max_credits: q("b-max") === "" ? undefined : Number(q("b-max")),
     };
   });
-  for (const s of scenes) if (!s.prompt) throw new Error(`Scene ${s.number} has no video prompt.`);
-  return { title: opt($("b-title").value), aspect_ratio: $("b-aspect").value, style: opt($("b-style").value), script: opt($("b-script").value), cast, scenes };
+  for (const s of scenes) if (!s.prompt && !s.visual) throw new Error(`Scene ${s.number} has no video prompt or visual description.`);
+  return { title: opt($("b-title").value), aspect_ratio: $("b-aspect").value, style: opt($("b-style").value), style_preset: opt($("b-preset").value), script: opt($("b-script").value), cast, locations, props, scenes };
 }
 
 const useButtons = {

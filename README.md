@@ -91,7 +91,7 @@ Flow takes frames or references in one clip, never both.
 | `flow_techniques` | 45 presets: camera moves, transitions, product and image looks |
 | `flow_voices`, `flow_narrate` | Narration with Google AI Studio voices (free key) or a voice on this computer |
 | `flow_cut` | Join clips with narration and music |
-| `flow_storyboard` | A film's plan on this computer: script, style, cast, and per scene the prompt, still, voice and settings |
+| `flow_storyboard` | A film's plan on this computer: script, style or `style_preset`, cast, locations, props, and per scene the prompt (or visual/motion/audio), linked assets, still, voice and settings |
 | `flow_resume` | Carry a film on with the account signed in now, making only the scenes that have no clip |
 | `flow_account` | The signed-in Google account and its credits; opens Google's page to switch account |
 | `flow_motion_plan`, `flow_motion_join` | Motion control from a reference video: split it into poses and clips, then retime and join the results |
@@ -105,6 +105,18 @@ downloads. State (browser profile, key, token) lives in `~/.flow-studio/`.
 A Flow project belongs to one Google account and cannot be shared, so nothing stored in Flow follows you to another
 account. Flow Studio keeps each film's plan in `<film>/storyboard.json` (the panel's **Storyboard** tab) next to its
 stills, clips and voices, and uploads from there whenever a scene needs them.
+
+What a storyboard can hold (all optional except each scene's prompt or visual):
+
+- **Assets:** `cast` (name, image, `look`, `physical`, `clothing`, `backstory`, `voice`), `locations` (name, image,
+  description, `time_of_day`) and `props` (name, image, description).
+- **Style:** `style` text and/or `style_preset` (`3d-animation`, `claymation`, `concept-sketch`, `charcoal`); the preset
+  comes first, and both are added to every prompt that does not already contain them.
+- **Scenes:** `title`, then either one `prompt` or `visual` + `motion` + `audio`, which Flow Studio joins into the
+  prompt. `assets` links the cast, locations and props in the shot: the first three go to Flow as references (when the
+  scene has no frame) and each linked character's look is restated in the prompt.
+
+Older storyboards with just `prompt`, `style` and `cast` keep working unchanged.
 
 When an account runs out of credits:
 

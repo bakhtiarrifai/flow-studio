@@ -8,7 +8,7 @@ import { z } from "zod";
 import { DEFAULT_MAX_CREDITS, OUT, PAUSE_MAX_S, PAUSE_MIN_S, UPLOAD_DIR, projectDir, safeName } from "./config.js";
 import * as flow from "./flow.js";
 import { cut, duration, lastFrame, motionJoin, motionPlan } from "./media.js";
-import { BOARD_FILE, boardShape, castImage, inFilm, pad, readBoard, sceneState, writeBoard } from "./storyboard.js";
+import { BOARD_FILE, assetNote, boardShape, boardStyle, castImage, inFilm, pad, readBoard, sceneState, scenePrompt, writeBoard } from "./storyboard.js";
 import { MOTION_MODELS, kieBalance, kieKey, motionEstimate, motionTransfer, saveKieKey } from "./kie.js";
 import { GOOGLE_VOICES, LOCAL_VOICE_HINT, googleKey, localVoices, saveGoogleKey, speakLocally, speakWithGoogle } from "./narrate.js";
 import { TECHNIQUES, techniqueById } from "./techniques.js";
@@ -183,7 +183,8 @@ const PLAYBOOK = {
     "flow_restyle has no quote beforehand and has cost more than a new clip. Always get the user's agreement first.",
   ],
   accounts: [
-    "Keep every film's plan in flow_storyboard: script, cast, and per scene the prompt, frame (or frame_prompt), voice and settings. Save it before generating.",
+    "Keep every film's plan in flow_storyboard: script, style (or style_preset), cast, locations, props, and per scene the prompt (or visual/motion/audio), assets, frame (or frame_prompt), voice and settings. Save it before generating.",
+    "Link the cast, locations and props that appear in a scene with its `assets`: the first three go to Flow as references and each linked character's look is restated in the prompt.",
     "A Flow project belongs to one Google account and cannot be shared, so nothing in Flow carries over to another account. The storyboard and the files on this computer do.",
     "When credits run out: flow_account with switch, the user picks or signs in to another account in the Flow window, then flow_resume. It opens or creates the film's project on that account, uploads frames and cast portraits from this computer, draws missing stills for free, and makes only scenes that have no clip yet.",
   ],
@@ -445,7 +446,8 @@ export class Studio {
     const dir = projectDir(project);
     const board = readBoard(dir);
     if (!board) throw new Error(`No storyboard for "${project}". Save one with flow_storyboard first.`);
-    const style = (text) => (board.style && !text.includes(board.style) ? `${text.trim().replace(/[.\s]*$/, ".")} ${board.style}` : text);
+    const look = boardStyle(board);
+    const style = (text) => (look && !text.includes(look) ? `${text.trim().replace(/[.\s]*$/, ".")} ${look}` : text);
     const asRef = (r) => (/[/\\]|\.(jpe?g|png|webp)$/i.test(r) ? inFilm(dir, r) : (castImage(board, r) ?? `asset:${r.replace(/^asset:/, "")}`));
     const todo = (board.scenes ?? []).filter((s) => (!only || only.includes(s.number)) && !sceneState(dir, s).done).sort((a, b) => a.number - b.number);
     if (!todo.length) return { queued: [], note: "Every scene asked for already has a clip. Nothing was queued." };
@@ -454,17 +456,20 @@ export class Studio {
     const open = this.enqueue("open_project", { title, dir }, `${project}: open its Flow project`);
     const queued = [{ job_id: open.id, file: "(Flow project)", type: "project" }];
     for (const s of todo) {
-      const refs = (s.references ?? []).map(asRef);
+      // Linked assets join the references (Flow takes three), and linked characters' looks are restated in the prompt.
+      const refs = [...new Set([...(s.references ?? []), ...(s.assets ?? [])])].slice(0, 3).map(asRef);
+      const notes = (s.assets ?? []).map((a) => assetNote(board, a)).filter(Boolean);
+      const withNotes = (text) => (notes.length ? `${text.trim().replace(/[.\s]*$/, ".")} ${notes.join(". ")}.` : text);
       const first = sceneState(dir, s).frame;
       let frameJob;
       if (!first && s.frame_prompt) {
         const stem = `frame-${pad(s.number)}`;
-        frameJob = this.enqueue("generate", { prompt: style(s.frame_prompt), type: "image", aspect_ratio: board.aspect_ratio, reference_images: refs.length ? refs : undefined, variants: 1, max_credits: 0, download_quality: "original", output_dir: dir, file_stem: stem, after: open.id }, `${project}/${stem}`);
+        frameJob = this.enqueue("generate", { prompt: style(withNotes(s.frame_prompt)), type: "image", aspect_ratio: board.aspect_ratio, reference_images: refs.length ? refs : undefined, variants: 1, max_credits: 0, download_quality: "original", output_dir: dir, file_stem: stem, after: open.id }, `${project}/${stem}`);
         queued.push({ job_id: frameJob.id, file: stem, type: "image", limit: 0 });
       }
       const stem = `scene-${pad(s.number)}`;
       const params = {
-        prompt: style(s.prompt), type: "video", aspect_ratio: board.aspect_ratio, variants: 1, download_quality: "original",
+        prompt: style(withNotes(scenePrompt(s))), type: "video", aspect_ratio: board.aspect_ratio, variants: 1, download_quality: "original",
         first_frame: first, frame_job: frameJob?.id, last_frame: s.last_frame && inFilm(dir, s.last_frame),
         reference_images: !first && !frameJob && refs.length ? refs : undefined,
         model: s.model, resolution: s.resolution, duration: s.duration,
