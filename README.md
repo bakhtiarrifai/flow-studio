@@ -100,6 +100,12 @@ Flow takes frames or references in one clip, never both.
 Files land in `~/flow-studio-out/<film>/`: `frame-NN` stills, `scene-NN` clips, `edit-NN` restyles, `clip-NN`
 downloads. State (browser profile, key, token) lives in `~/.flow-studio/`.
 
+## Making a series of shorts
+
+`kits/shorts/` holds the local finishing scripts used for an 8-episode series of 33 s YouTube Shorts: a 1 s zoom-in
+cover with a title card, ducked backsound, burned-in subtitles, 360p and 1080p exports, and the lessons learned
+(safety-filter false positives, download checks, mix levels). See [kits/shorts/README.md](kits/shorts/README.md).
+
 ## Storyboard and switching accounts
 
 A Flow project belongs to one Google account and cannot be shared, so nothing stored in Flow follows you to another

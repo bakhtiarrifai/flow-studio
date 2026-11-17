@@ -177,9 +177,11 @@ const PLAYBOOK = {
   ],
   money: [
     "Stills on Flow's default image model cost nothing. Video costs credits per clip and per take.",
-    "economy 'draft' makes a video on Omni Flash at 360p for 8 credits: offer it for drafts and tests. economy 'lite' uses Veo 3.1 - Lite at 720p for 10 credits, half of Veo 3.1 - Fast: offer it for finished clips on a budget.",
+    "economy 'draft' makes a video on Omni Flash at 360p for 8 credits: offer it for drafts and tests. Omni Flash at 360p has no length choice (always 8 s); a duration passed for it is skipped with a note. economy 'lite' uses Veo 3.1 - Lite at 720p for 10 credits, half of Veo 3.1 - Fast: offer it for finished clips on a budget.",
     "Every scene has max_credits. Flow's own quote is read before generating and the scene is skipped if it is over.",
     "A clip that was generated but did not download is still in Flow: fetch it with flow_download. Never generate it again.",
+    "A download that fails because Flow marked the tile Failed (often its safety filter, e.g. on clips of children) was refunded: reword the prompt (\"the animated character\" instead of \"the boy\") and generate again.",
+    "flow_download with quality 'upscaled' is free: a 720p clip comes back at 1080p, a 360p clip at 720p.",
     "flow_restyle has no quote beforehand and has cost more than a new clip. Always get the user's agreement first.",
   ],
   accounts: [
