@@ -3,7 +3,7 @@
 // Flow has no public interface for this, so the driver finds controls by their accessible names and custom element
 // tags. When Google changes the page, this is the file that needs updating: the names are collected in UI below.
 import { execFileSync } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { getFlowPage } from "./browser.js";
@@ -333,7 +333,7 @@ async function pickModel(page, model) {
 }
 
 // Applies the scene's settings and returns the price Flow itself quotes for them.
-async function applySettings(page, s) {
+async function applySettings(page, s, job) {
   const frames = Boolean(s.first_frame || s.last_frame);
   await openSettings(page);
   await pick(page, s.type === "image" ? "Image" : "Video");
@@ -341,7 +341,14 @@ async function applySettings(page, s) {
   if (s.aspect_ratio) await pick(page, s.aspect_ratio);
   if (s.model) await pickModel(page, s.model);
   if (s.type === "video" && s.resolution) await pick(page, new RegExp(`^${s.resolution}`));
-  if (s.type === "video" && s.duration) await pick(page, `${s.duration}s`);
+  // Some models offer no length choice (Omni Flash at 360p is fixed at 8 s), so a duration is a wish, not a demand.
+  if (s.type === "video" && s.duration) {
+    try {
+      await pick(page, `${s.duration}s`);
+    } catch {
+      addNote(job, `${s.duration}s is not offered for this model/resolution; Flow's default length was used`);
+    }
+  }
   await pick(page, `x${s.variants ?? 1}`);
   await sleep(page, 600);
   const text = await page.getByRole("link", { name: UI.quote }).innerText();
@@ -487,12 +494,38 @@ const SYSTEM_DOWNLOADS = join(homedir(), "Downloads");
 const DOWNLOAD_DIRS = [DOWNLOAD_DIR, SYSTEM_DOWNLOADS];
 
 // The browser is told to save into a folder this tool owns. Another DevTools client can reset that browser-wide, so it
-// is set again before every download, and the system Downloads folder is watched as well.
+// is set again before every download, and the system Downloads folder is watched as well. The session stays open for
+// the whole download so its events name the exact file this click produced (saved under the download's guid).
 async function claimDownloads(page) {
   mkdirSync(DOWNLOAD_DIR, { recursive: true });
   const cdp = await page.context().newCDPSession(page);
+  const started = [];
+  const finished = new Map();
+  cdp.on("Browser.downloadWillBegin", (e) => started.push(e.guid));
+  cdp.on("Browser.downloadProgress", (e) => {
+    if (e.state === "completed" || e.state === "canceled") finished.set(e.guid, e.state);
+  });
   await cdp.send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: DOWNLOAD_DIR, eventsEnabled: true }).catch(() => {});
-  await cdp.detach().catch(() => {});
+  return { started, finished, close: () => cdp.detach().catch(() => {}) };
+}
+
+// Waits for the first download that began after `mark`, by guid, so a late file from an earlier attempt can never be
+// taken for this one. Returns undefined if the browser sent no download events, and the caller falls back to scanning.
+async function awaitTrackedDownload(page, track, mark, timeout) {
+  const deadline = Date.now() + timeout;
+  const eventGrace = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const guid = track.started[mark];
+    if (!guid && Date.now() > eventGrace) return undefined;
+    const state = guid && track.finished.get(guid);
+    if (state === "canceled") throw new Error("The browser cancelled Flow's download.");
+    if (state === "completed") {
+      const file = join(DOWNLOAD_DIR, guid);
+      if (existsSync(file) && statSync(file).size > 0) return file;
+    }
+    await sleep(page, 500);
+  }
+  throw new Error("Flow started a download but it did not finish in time.");
 }
 
 function downloadsNow() {
@@ -567,13 +600,24 @@ function unzip(zip, dest) {
   return files.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
+// A rename cannot cross disks (an output folder on a NAS, /tmp, a second drive), so that case copies and deletes.
+function move(from, to) {
+  try {
+    renameSync(from, to);
+  } catch (err) {
+    if (err.code !== "EXDEV") throw err;
+    copyFileSync(from, to);
+    unlinkSync(from);
+  }
+}
+
 // Moves a finished download to <stem>.<ext>. A tile holding several takes downloads as a ZIP; its takes become
 // <stem>, <stem>-v2, ...
 function keep(file, stem) {
   const ext = sniff(file);
   if (ext !== ".zip") {
     const target = `${stem}${ext}`;
-    renameSync(file, target);
+    move(file, target);
     return [target];
   }
   const takes = unzip(file, mkdtempSync(join(tmpdir(), "flow-studio-takes-")));
@@ -587,38 +631,47 @@ function keep(file, stem) {
 
 // `find` is called again on every attempt: the virtual grid can unmount and remount a tile between steps.
 async function downloadTile(page, find, stem, quality = "original") {
-  await claimDownloads(page);
+  const track = await claimDownloads(page);
   mkdirSync(join(stem, ".."), { recursive: true });
   let lastError;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const tile = await find();
-      const before = downloadsNow();
-      await openTileMenu(page, tile);
-      const download = page.getByRole("menuitem", { name: "Download", exact: true });
-      if (!(await visible(download, 8000))) {
-        const offered = await page.locator('[role="menuitem"]').evaluateAll((items) => items.map((m) => (m.textContent ?? "").replace(/\s+/g, " ").trim()));
-        throw new Error(offered.length ? `Flow's tile menu has no Download item. It offered: ${offered.join(" | ")}` : "Flow's tile menu did not open.");
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const tile = await find();
+        const before = downloadsNow();
+        const mark = track.started.length;
+        await openTileMenu(page, tile);
+        const download = page.getByRole("menuitem", { name: "Download", exact: true });
+        if (!(await visible(download, 8000))) {
+          const offered = await page.locator('[role="menuitem"]').evaluateAll((items) => items.map((m) => (m.textContent ?? "").replace(/\s+/g, " ").trim()));
+          if (offered.length && offered.every((o) => /delete/i.test(o)))
+            throw new Error("Flow marked this generation as Failed (often its safety filter, e.g. a false positive on children's content), so there is nothing to download. Flow refunds failed generations. Reword the prompt (for example \"the animated character\" instead of \"the boy\") and generate again.");
+          throw new Error(offered.length ? `Flow's tile menu has no Download item. It offered: ${offered.join(" | ")}` : "Flow's tile menu did not open.");
+        }
+        await download.click({ timeout: 10_000 });
+        // A size submenu follows: the original, or the best upscale the plan allows.
+        const original = page.getByRole("menuitem", { name: /original/i }).first();
+        if (await visible(original, 3000)) {
+          const upscaled = page.locator('[role="menuitem"]:not([aria-disabled="true"]):not([disabled])').filter({ hasText: /upscaled/i }).first();
+          await (quality === "upscaled" && (await visible(upscaled)) ? upscaled : original).click();
+        }
+        const limit = quality === "upscaled" ? 600_000 : 180_000;
+        const file = (await awaitTrackedDownload(page, track, mark, limit)) ?? (await awaitDownload(page, before, limit));
+        const saved = keep(file, stem);
+        await page.keyboard.press("Escape");
+        await scrollToTop(page);
+        return saved;
+      } catch (err) {
+        lastError = err;
+        await page.keyboard.press("Escape").catch(() => {});
+        if (/marked this generation as Failed/.test(err.message)) break; // retrying cannot help
+        await sleep(page, 2000);
       }
-      await download.click({ timeout: 10_000 });
-      // A size submenu follows: the original, or the best upscale the plan allows.
-      const original = page.getByRole("menuitem", { name: /original/i }).first();
-      if (await visible(original, 3000)) {
-        const upscaled = page.locator('[role="menuitem"]:not([aria-disabled="true"]):not([disabled])').filter({ hasText: /upscaled/i }).first();
-        await (quality === "upscaled" && (await visible(upscaled)) ? upscaled : original).click();
-      }
-      const file = await awaitDownload(page, before, quality === "upscaled" ? 600_000 : 180_000);
-      const saved = keep(file, stem);
-      await page.keyboard.press("Escape");
-      await scrollToTop(page);
-      return saved;
-    } catch (err) {
-      lastError = err;
-      await page.keyboard.press("Escape").catch(() => {});
-      await sleep(page, 2000);
     }
+    throw lastError;
+  } finally {
+    await track.close();
   }
-  throw lastError;
 }
 
 async function downloadResult(page, id, stem, quality) {
@@ -690,7 +743,7 @@ export async function generate(job) {
   await emptyComposer(page);
 
   job.progress = "reading Flow's price";
-  job.credits = await applySettings(page, s);
+  job.credits = await applySettings(page, s, job);
   if (job.credits > s.max_credits) {
     throw new Error(`Flow quotes ${job.credits} credits for this scene, above the limit of ${s.max_credits}. Nothing was generated. Raise max_credits, or choose a cheaper model, length or take count.`);
   }
@@ -758,7 +811,7 @@ export async function listAssets() {
 // A scene's tile menu would download a ZIP of loose clips; from inside the scene view it exports as one film.
 // Nothing may be pressed while Flow exports.
 async function downloadScene(page, scene, stem) {
-  await claimDownloads(page);
+  await (await claimDownloads(page)).close(); // sets the download folder; this path still scans for the file
   const tile = assetTile(page, scene);
   await hover(page, tile);
   await tile.click();
@@ -847,7 +900,7 @@ export async function listCharacters() {
 }
 
 async function savePortrait(page, name) {
-  await claimDownloads(page);
+  await (await claimDownloads(page)).close(); // sets the download folder; this path still scans for the file
   mkdirSync(CAST_DIR, { recursive: true });
   const picture = page.getByRole("img", { name: UI.portrait }).first();
   const button = page.getByRole("button", { name: "Download image", exact: true });
