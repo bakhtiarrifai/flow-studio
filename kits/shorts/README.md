@@ -13,6 +13,7 @@ cover, judul, campuran backsound, subtitle, serta ekspor 360p / 1080p.
 | `build_ep.sh` | Satu episode: cover 1 detik dengan zoom dan kartu judul, 4 klip, narasi, backsound dengan ducking, subtitle dibakar ke video. `RES=360` (bawaan) atau `RES=1080` |
 | `title_overlay.py` | Kartu judul: Comfortaa Bold, dipecah 2–3 baris seimbang, sebesar yang muat, baris terakhir kuning hangat, dengan gradasi gelap lembut di belakangnya. Juga membuat thumbnail |
 | `backsound.py` | Membuat latar ambient Timur Tengah yang bisa diulang (drone D Hijaz, petikan mirip oud, duff lembut). Tanpa sampel, tanpa API |
+| `gemini_brief_sirah_next_episodes.md` | Brief untuk Gemini: mencari kisah sahabat cilik baru dan menulis spec episode dengan semua parameter yang sudah terbukti (format, prompt, suara, subtitle, storyboard JSON) |
 
 ### Folder film
 
@@ -85,6 +86,7 @@ cover, titles, backsound mix, subtitles and the 360p / 1080p exports.
 | `build_ep.sh` | One episode: 1 s zoom-in cover with title card, 4 clips, narration, ducked backsound, burned-in subtitles. `RES=360` (default) or `RES=1080` |
 | `title_overlay.py` | Title card: Comfortaa Bold, wrapped over 2–3 balanced lines, as large as fits, last line in warm yellow, soft dark gradient behind it. Also writes the thumbnail |
 | `backsound.py` | Generates a loopable Middle-Eastern ambient bed (D Hijaz drone, oud-like plucks, soft duff). No samples, no API |
+| `gemini_brief_sirah_next_episodes.md` | Brief for Gemini (in Bahasa Indonesia): find new child-companion stories and write episode specs with every proven parameter (format, prompts, voice, subtitles, storyboard JSON) |
 
 ### Film folder
 
